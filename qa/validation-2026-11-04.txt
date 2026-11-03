@@ -1,0 +1,23 @@
+Validation checkpoint: 4 November 2026 (Australia/Sydney)
+
+Cached build image: mgsv-coop-builder:local
+Image ID: sha256:64bd7c3d47dc697749af4884ade2bfc2018e3e46fde674742a4d9c7d1c784ac1
+Tests ran without network access, using the existing toolchain.
+Dynamite source base: 7fe74d31128ed8d3741b07181cb99e4adc1f57be
+
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+Ran 173 tests in 70.590s
+OK
+
+python3 -m unittest discover -s tools -p 'test_launch_mgsv_coop.py' -v
+Ran 8 tests in 0.565s
+OK
+
+python3 build-support/export_invite_controller_patch.py --verify-only
+Fresh 7 patch application and byte comparison passed: 30 source files
+Latest patch SHA256:
+745bb1bb34d0d9d712709ecda3d629521f296e0be7941fa729f0edf49bb9aa2b
+
+No actual game startup, game installation, Steam invitation delivery or
+multiplayer test ran in this checkpoint. Existing owner capture results are
+metadata observations with the limits documented in qa/build-status.json.

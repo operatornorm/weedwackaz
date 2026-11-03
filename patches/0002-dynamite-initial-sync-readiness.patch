@@ -1,0 +1,160 @@
+--- a/hook/src/DynamiteSyncImpl/DynamiteSyncImpl.cpp
++++ b/hook/src/DynamiteSyncImpl/DynamiteSyncImpl.cpp
+@@ -26,16 +26,16 @@
+ 
+     void DynamiteSyncImpl::SyncInit() {
+         spdlog::info("{}", __PRETTY_FUNCTION__);
+-        syncStatus.clear();
++        initialVarSync.Begin(enemyVars);
+ 
+         for (const auto &v : enemyVars) {
+             spdlog::info("{}, {}", __PRETTY_FUNCTION__, v);
+-            syncStatus[v] = false;
+         }
+     }
+ 
+     void DynamiteSyncImpl::Init() {
+         spdlog::info("{}", __PRETTY_FUNCTION__);
++        initialVarSync.Reset();
+ 
+         packetNumber = 0;
+         packetSeen = 0;
+@@ -43,6 +43,7 @@
+ 
+     void DynamiteSyncImpl::Stop() {
+         spdlog::info("{}", __PRETTY_FUNCTION__);
++        initialVarSync.Reset();
+         if (syncThread.joinable()) {
+             syncThread.request_stop();
+             syncThread.join();
+@@ -71,7 +72,7 @@
+     }
+ 
+     bool DynamiteSyncImpl::IsSynchronized() {
+-        if (std::ranges::all_of(syncStatus, [](const auto &pair) { return pair.second; })) {
++        if (initialVarSync.Ready()) {
+             spdlog::info("{}, sync done", __PRETTY_FUNCTION__);
+             return true;
+         }
+@@ -104,7 +105,7 @@
+ 
+     void DynamiteSyncImpl::WaitForSync() {
+         spdlog::info("{}", __PRETTY_FUNCTION__);
+-        if (syncStatus.size() == 0) {
++        if (initialVarSync.Pending().empty()) {
+             spdlog::info("{} nothing to wait for", __PRETTY_FUNCTION__);
+             return;
+         }
+@@ -117,11 +118,7 @@
+         syncThread = std::jthread([this](const std::stop_token &stoken) {
+             spdlog::info("{}, starting sync thread", __PRETTY_FUNCTION__);
+             while (!stoken.stop_requested()) {
+-                for (const auto &[key, value] : syncStatus) {
+-                    if (value) {
+-                        continue;
+-                    }
+-
++                for (const auto &key : initialVarSync.Pending()) {
+                     RequestVar("svars", key);
+                 }
+ 
+@@ -566,6 +563,7 @@
+     }
+ 
+     void DynamiteSyncImpl::HandleSyncVar(const DynamiteMessage::MessageWrapper *w) {
++        const auto syncGeneration = initialVarSync.Generation();
+         const auto m = w->msg_as_SyncVar();
+         spdlog::info("{}: {}.{}, size {}, start {}, type {}",
+             __PRETTY_FUNCTION__,
+@@ -628,7 +626,7 @@
+             break;
+         }
+ 
+-        syncStatus[m->name()->c_str()] = res;
++        initialVarSync.Record(syncGeneration, m->category()->c_str(), m->name()->c_str(), res);
+     }
+ 
+     bool DynamiteSyncImpl::SyncBoolVar(const DynamiteMessage::SyncVar *m, void *vars, const uint32_t varIndex) {
+--- a/hook/src/DynamiteSyncImpl/DynamiteSyncImpl.h
++++ b/hook/src/DynamiteSyncImpl/DynamiteSyncImpl.h
+@@ -4,6 +4,7 @@
+ #include "BossQuietNextActionTaskActionCondition.h"
+ #include "DynamiteSyncSchema_generated.h"
+ #include "WireBounds.h"
++#include "InitialVarSync.h"
+ #include "Tpp/BossQuietActionCommand.h"
+ #include "Tpp/BossQuietActionControllerImplWork.h"
+ #include "Tpp/BossQuietActionTask.h"
+@@ -95,7 +96,7 @@
+         uint32_t packetNumber = 0;
+         uint32_t packetSeen = 0;
+         std::jthread syncThread;
+-        std::map<std::string, bool> syncStatus{};
++        InitialVarSync initialVarSync;
+         std::vector<std::string> enemyVars = {
+             // "cpNames",
+             // "cpFlags",
+--- /dev/null
++++ b/hook/src/DynamiteSyncImpl/InitialVarSync.h
+@@ -0,0 +1,61 @@
++#ifndef DYNAMITE_INITIAL_VAR_SYNC_H
++#define DYNAMITE_INITIAL_VAR_SYNC_H
++
++#include <algorithm>
++#include <cstdint>
++#include <map>
++#include <mutex>
++#include <string>
++#include <string_view>
++#include <vector>
++
++namespace Dynamite {
++    // Tracks successful required svars handlers, not peer liveness or world readiness.
++    // A generation rejects handlers overlapping a local reset; it is not a wire epoch.
++    class InitialVarSync {
++      public:
++        void Reset() {
++            std::lock_guard lock(mutex);
++            ++generation;
++            status.clear();
++        }
++
++        void Begin(const std::vector<std::string> &required) {
++            std::lock_guard lock(mutex);
++            ++generation;
++            status.clear();
++            for (const auto &name : required) status.emplace(name, false);
++        }
++
++        std::uint64_t Generation() const {
++            std::lock_guard lock(mutex);
++            return generation;
++        }
++
++        void Record(std::uint64_t token, std::string_view category, std::string_view name, bool applied) {
++            std::lock_guard lock(mutex);
++            if (token != generation || category != "svars") return;
++            const auto entry = status.find(name);
++            if (entry != status.end()) entry->second = applied;
++        }
++
++        bool Ready() const {
++            std::lock_guard lock(mutex);
++            return !status.empty() && std::all_of(status.begin(), status.end(),
++                [](const auto &entry) { return entry.second; });
++        }
++
++        std::vector<std::string> Pending() const {
++            std::lock_guard lock(mutex);
++            std::vector<std::string> result;
++            for (const auto &[name, applied] : status) if (!applied) result.push_back(name);
++            return result;
++        }
++
++      private:
++        mutable std::mutex mutex;
++        std::uint64_t generation = 0;
++        std::map<std::string, bool, std::less<>> status;
++    };
++}
++#endif

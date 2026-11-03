@@ -1,0 +1,40 @@
+& {
+    $ErrorActionPreference = 'Stop'
+    if ([Security.Principal.WindowsIdentity]::GetCurrent().Name -match '\\WDAGUtilityAccount$') { throw 'Run this preparation block on your normal Windows desktop, outside Sandbox.' }
+    $mgsvSource = (Read-Host 'Paste the path to the extracted QA-session package folder').Trim('"')
+    foreach ($mgsvName in @('Guest-Prelogin.txt', 'Guest-Steps.txt', 'Steam-installation.txt')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $mgsvSource $mgsvName) -PathType Leaf)) { throw 'The extracted package is incomplete.' }
+    }
+    $mgsvNonce = [Guid]::NewGuid().ToString('N')
+    $mgsvRoot = Join-Path ([Environment]::GetFolderPath('UserProfile')) ('Downloads\MGSV-QA-' + $mgsvNonce)
+    New-Item -ItemType Directory -Path $mgsvRoot -ErrorAction Stop | Out-Null
+    $mgsvInput = Join-Path $mgsvRoot 'Input'
+    $mgsvOutput = Join-Path $mgsvRoot 'Output'
+    New-Item -ItemType Directory -Path $mgsvInput, $mgsvOutput | Out-Null
+    foreach ($mgsvName in @('Guest-Prelogin.txt', 'Guest-Steps.txt', 'Steam-installation.txt')) {
+        Copy-Item -LiteralPath (Join-Path $mgsvSource $mgsvName) -Destination (Join-Path $mgsvInput $mgsvName) -ErrorAction Stop
+    }
+    $mgsvManifest = [ordered]@{
+        schema = 1
+        run = $mgsvNonce
+        prelogin_sha256 = (Get-FileHash -LiteralPath (Join-Path $mgsvInput 'Guest-Prelogin.txt') -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    $mgsvManifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $mgsvInput 'run.json') -Encoding UTF8
+    $mgsvInputXml = [Security.SecurityElement]::Escape($mgsvInput)
+    $mgsvOutputXml = [Security.SecurityElement]::Escape($mgsvOutput)
+    $mgsvXml = @"
+<Configuration>
+<VGpu>Enable</VGpu><Networking>Enable</Networking><MemoryInMB>4096</MemoryInMB>
+<AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput>
+<PrinterRedirection>Disable</PrinterRedirection><ClipboardRedirection>Disable</ClipboardRedirection>
+<MappedFolders>
+<MappedFolder><HostFolder>$mgsvInputXml</HostFolder><SandboxFolder>C:\MGSVQA\Input</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>
+<MappedFolder><HostFolder>$mgsvOutputXml</HostFolder><SandboxFolder>C:\MGSVQA\Output</SandboxFolder><ReadOnly>false</ReadOnly></MappedFolder>
+</MappedFolders>
+<LogonCommand><Command>C:\Windows\System32\notepad.exe C:\MGSVQA\Input\Guest-Steps.txt</Command></LogonCommand>
+</Configuration>
+"@
+    $mgsvXml | Set-Content -LiteralPath (Join-Path $mgsvRoot 'MGSV-Test.wsb') -Encoding UTF8
+    Write-Output ('Prepared: ' + $mgsvRoot)
+    Write-Output 'No Sandbox, Steam, account login or game was started. Review the folder and instructions before proceeding.'
+}

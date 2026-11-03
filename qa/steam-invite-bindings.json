@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "executable_sha256": "f3818d172293800171a344a71957bc7257f591bbf7c1792e10fef6bfbba7f4f2",
+  "steam_dll_sha256": "08bd0152356e5619ee56a6714ac951b6800dbb21821693a4efaf85278442c60a",
+  "steam_dll_size": 211368,
+  "machine": "amd64",
+  "reported_named_exports": 747,
+  "reported_steam_exports": 738,
+  "factory_versions": [
+    "SteamFriends015",
+    "SteamUser018",
+    "SteamUtils007"
+  ],
+  "required_exports": [
+    "SteamClient",
+    "SteamAPI_GetHSteamUser",
+    "SteamAPI_GetHSteamPipe",
+    "SteamAPI_ISteamClient_GetISteamFriends",
+    "SteamAPI_ISteamClient_GetISteamUser",
+    "SteamAPI_ISteamClient_GetISteamUtils",
+    "SteamAPI_ISteamUtils_GetAppID",
+    "SteamAPI_ISteamUser_GetSteamID",
+    "SteamAPI_ISteamFriends_GetFriendRelationship",
+    "SteamAPI_ISteamFriends_InviteUserToGame",
+    "SteamAPI_RegisterCallback",
+    "SteamAPI_UnregisterCallback"
+  ],
+  "sdk_reference": {
+    "repository": "https://github.com/ValveSoftware/Proton",
+    "commit": "e91ca2be0df2cef4c230cbbc0b86604d73a0bbf6",
+    "directory": "lsteamclient/steamworks_sdk_135",
+    "steam_api_sha256": "214223eb179aea3fffdee9785e034278d9dfefabb9fa22b9b7522c68bd1497a1",
+    "friends_sha256": "b086ebb6f96d8cef560c875c7f5ede33fc22a92438613ebaf4220e2d81812d8d",
+    "flat_api_sha256": "cbd42dc76c6100b1a44dd9ccfbbaf3b40d8490229954ad18f2db65efeccbdb36",
+    "callback_id": 337,
+    "callback_payload_size_amd64": 264,
+    "callback_base_size_amd64": 16,
+    "callback_base_virtual_methods": 3
+  },
+  "app_id": 287700,
+  "can_enable_gameplay": false,
+  "runtime_interfaces_verified": false,
+  "mgo_coexistence_verified": false,
+  "standalone_runtime_interfaces_and_registration_verified": true,
+  "standalone_result_sha256": "5072d5b65b03072ff65af442b126c561e314c3ba5430f06de1b166af1a181dd0",
+  "runtime_interfaces_verified_scope": "game_context_only_still_unverified"
+}

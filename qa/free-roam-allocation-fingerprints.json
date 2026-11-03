@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "purpose": "allocator_identity_preflight_only",
+  "executable_sha256": "f3818d172293800171a344a71957bc7257f591bbf7c1792e10fef6bfbba7f4f2",
+  "support_source_sha256": "a53d1f4437bbbcb425c5e20e9fb08b0efc1d44270fba6a28bb78c59330245886",
+  "targets": [
+    {
+      "id": "afghanistan-normal",
+      "mission": 30010,
+      "archive": "master/chunk2.dat",
+      "loader_pack": "/Assets/tpp/pack/mission2/free/f30010/f30010.fpk",
+      "loader_pack_sha256": "97c50bee8885f581b54d86f6b42585509a1393436d6225f1f26e5eb5cd402414",
+      "package": "/Assets/tpp/pack/mission2/free/f30010/f30010.fpkd",
+      "package_sha256": "1238d2538db5ba44823cf1703cd0efed5b7b44d6fb6c09c2eaf0ac0df2d6efff",
+      "member": "/Assets/tpp/level_asset/chara/player/game_object/single_pl2_instance_scarf.fox2",
+      "member_sha256": "2eec9aa68f858ee68a75f3ebdb0b52870895568aab257e25ef2e68a18b840a51",
+      "member_size": 2096,
+      "parts_profile_hash": "0000c94e97c2d50c",
+      "member_count": 366
+    },
+    {
+      "id": "afghanistan-recover-volgin",
+      "mission": 30010,
+      "archive": "master/chunk2.dat",
+      "loader_pack": "/Assets/tpp/pack/mission2/free/f30010/f30011.fpk",
+      "loader_pack_sha256": "081432de1f8dd2c68778670e4a62f41ba7c32ce649e24629f05ac25804e80071",
+      "package": "/Assets/tpp/pack/mission2/free/f30010/f30011.fpkd",
+      "package_sha256": "8c23f7832381540bf315adc22176c851d96ab1faeeb2ba41e584e28e57510b25",
+      "member": "/Assets/tpp/level_asset/chara/player/game_object/single_pl2_instance_scarf.fox2",
+      "member_sha256": "984fc57d57514dfc9e7509b1cf80651dd609d978fe414bf45f2a15a0248922cd",
+      "member_size": 2096,
+      "parts_profile_hash": "0000c94e97c2d50c",
+      "member_count": 211
+    },
+    {
+      "id": "africa-normal",
+      "mission": 30020,
+      "archive": "master/chunk4.dat",
+      "loader_pack": "/Assets/tpp/pack/mission2/free/f30020/f30020.fpk",
+      "loader_pack_sha256": "c250778c09f56fcf960476fdeed9520e399b8ecb55b8437712dee5774e0a8f5c",
+      "package": "/Assets/tpp/pack/mission2/free/f30020/f30020.fpkd",
+      "package_sha256": "d1dcf1e0fcb174ae4df994f6317ee7e6b6a1420a59b5d3f2916c00c783248cba",
+      "member": "/Assets/tpp/level_asset/chara/player/game_object/single_player2_instance.fox2",
+      "member_sha256": "61048eaee1bacc9cedfd6c91c10735de73c933baeb4b9f5379828321c8327e8a",
+      "member_size": 2080,
+      "parts_profile_hash": "0000bc3759d825c8",
+      "member_count": 320
+    }
+  ]
+}

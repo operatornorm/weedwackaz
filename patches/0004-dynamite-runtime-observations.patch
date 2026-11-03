@@ -1,0 +1,385 @@
+diff --git a/hook/src/CoopRuntimeObservation.h b/hook/src/CoopRuntimeObservation.h
+new file mode 100644
+--- /dev/null
++++ b/hook/src/CoopRuntimeObservation.h
+@@ -0,0 +1,87 @@
++#ifndef DYNAMITE_COOP_RUNTIME_OBSERVATION_H
++#define DYNAMITE_COOP_RUNTIME_OBSERVATION_H
++
++#include <atomic>
++#include <cstddef>
++#include <cstdint>
++#include <limits>
++#include <optional>
++#include <string>
++#include <type_traits>
++
++namespace Dynamite {
++    // Diagnostic counters are local to this DLL instance, never session/peer epochs.
++    class ObservationCounter {
++      public:
++        explicit ObservationCounter(std::uint64_t initial = 0) : value(initial) {}
++        std::optional<std::uint64_t> Next() {
++            auto previous = value.load();
++            while (previous != std::numeric_limits<std::uint64_t>::max()) {
++                if (value.compare_exchange_weak(previous, previous + 1)) return previous + 1;
++            }
++            return std::nullopt;
++        }
++      private:
++        std::atomic<std::uint64_t> value;
++    };
++
++    struct MemberObservation {
++        const char *status = "unavailable";
++        std::optional<int> count;
++    };
++
++    // Same main-session/+0x20 layout already used by DynamiteCore::GetMemberCount
++    // for the pinned regular 1.0.15.3 executable. Never replace unknown with solo.
++    template <class SessionGetter, class CountGetter>
++    MemberObservation ObserveMembers(bool modSessionCreated, SessionGetter getSession, CountGetter getCount) {
++        if (!modSessionCreated) return {"mod_session_not_created", std::nullopt};
++        if (getSession == nullptr || getCount == nullptr) return {"native_api_unavailable", std::nullopt};
++        auto *session = getSession();
++        if (session == nullptr) return {"main_session_unavailable", std::nullopt};
++        const auto count = getCount(static_cast<void *>(static_cast<char *>(session) + 0x20));
++        if (count < 0 || count > 16) return {"native_count_out_of_range", std::nullopt};
++        return {"native_count_observed", count};
++    }
++
++    struct CoopRuntimeObservation {
++        bool available = false;
++        bool configuredHost = false;
++        bool sessionCreated = false;
++        bool hostSessionCreated = false;
++        bool sessionConnected = false;
++        MemberObservation members;
++        std::optional<std::uint64_t> sample;
++        std::uint64_t initialGeneration = 0;
++        std::size_t initialRequired = 0;
++        std::size_t initialApplied = 0;
++    };
++
++    // One fixed scalar allowlist. No pointers, identities, addresses, arbitrary
++    // strings, paths or game assets. Large counters use decimal strings for Lua5.1.
++    template <class Field>
++    void VisitCoopRuntimeObservation(const CoopRuntimeObservation &s, Field field) {
++        field("schema", 1);
++        field("observation_only", true);
++        field("can_authorize", false);
++        field("coherent_snapshot_verified", false);
++        field("native_available", s.available);
++        field("configured_role", std::string(s.available ? (s.configuredHost ? "host" : "client") : "unknown"));
++        field("session_created_bookkeeping", s.sessionCreated);
++        field("host_session_created_bookkeeping", s.hostSessionCreated);
++        field("session_connected_bookkeeping", s.sessionConnected);
++        field("member_query_status", std::string(s.members.status));
++        if (s.members.count) field("engine_member_count", *s.members.count);
++        field("sample_counter_exhausted", !s.sample.has_value());
++        if (s.sample) field("sample_id", std::to_string(*s.sample));
++        field("initial_vars_generation", std::to_string(s.initialGeneration));
++        field("initial_vars_required", static_cast<int>(s.initialRequired));
++        field("initial_vars_applied", static_cast<int>(s.initialApplied));
++        field("initial_vars_handlers_complete", s.initialRequired > 0 && s.initialRequired == s.initialApplied);
++        field("initial_vars_complete_arrays_verified", false);
++        field("peer_liveness_verified", false);
++        field("remote_player_realization_verified", false);
++        field("world_agreement_verified", false);
++        field("protocol_epoch_verified", false);
++    }
++}
++#endif
+diff --git a/hook/src/DynamiteCore.h b/hook/src/DynamiteCore.h
+--- a/hook/src/DynamiteCore.h
++++ b/hook/src/DynamiteCore.h
+@@ -8,6 +8,7 @@
+ #include "Tpp/TppNPCLifeState.h"
+ #include "Tpp/TppTypes.h"
+ 
++#include <atomic>
+ #include <thread>
+ 
+ namespace Dynamite {
+@@ -47,10 +48,10 @@
+         void BossQuietSetNextActionTask(uint32_t param_1, BossQuietActionTask *actionTask, BossQuietNextActionTaskActionCondition actionType) const;
+ 
+       private:
+-        bool sessionCreated = false;
+-        bool sessionConnected = false;
++        std::atomic<bool> sessionCreated = false;
++        std::atomic<bool> sessionConnected = false;
+         bool emblemCreated = false;
+-        bool hostSessionCreated = false;
++        std::atomic<bool> hostSessionCreated = false;
+         unsigned int offensePlayerID = 0;
+         unsigned int defensePlayerID = 15;
+         Config *cfg = nullptr;
+diff --git a/hook/src/DynamiteLua.cpp b/hook/src/DynamiteLua.cpp
+--- a/hook/src/DynamiteLua.cpp
++++ b/hook/src/DynamiteLua.cpp
+@@ -1,4 +1,5 @@
+ #include "DynamiteLua.h"
++#include "CoopRuntimeObservation.h"
+ #include "DynamiteHook.h"
+ #include "dynamite.h"
+ #include "lua/lauxlib.h"
+@@ -7,6 +8,36 @@
+ #include "spdlog/spdlog.h"
+ 
+ namespace Dynamite {
++    // Read only, called from the owning Lua context. Never calls Lua using the
++    // cached hookState.luaState or probes/allocates absent player slots.
++    int l_ReadRuntimeObservation(lua_State *L) {
++        static ObservationCounter counter;
++        CoopRuntimeObservation snapshot;
++        snapshot.sample = counter.Next();
++        if (g_hook != nullptr) {
++            snapshot.available = true;
++            snapshot.configuredHost = g_hook->cfg.Host;
++            snapshot.sessionCreated = g_hook->dynamiteCore.GetSessionCreated();
++            snapshot.hostSessionCreated = g_hook->dynamiteCore.GetHostSessionCreated();
++            snapshot.sessionConnected = g_hook->dynamiteCore.GetSessionConnected();
++            snapshot.members = ObserveMembers(snapshot.sessionCreated || snapshot.hostSessionCreated,
++                FoxNtSessionGetMainSession, GetSessionMemberCount);
++            const auto initial = g_hook->dynamiteSyncImpl.ObserveInitialVariables();
++            snapshot.initialGeneration = initial.generation;
++            snapshot.initialRequired = initial.required;
++            snapshot.initialApplied = initial.applied;
++        }
++        lua_createtable(L, 0, 22);
++        VisitCoopRuntimeObservation(snapshot, [L](const char *key, const auto &value) {
++            using Value = std::decay_t<decltype(value)>;
++            if constexpr (std::is_same_v<Value, bool>) lua_pushboolean(L, value);
++            else if constexpr (std::is_same_v<Value, int>) lua_pushinteger(L, value);
++            else lua_pushstring(L, value.c_str());
++            lua_setfield(L, -2, key);
++        });
++        return 1;
++    }
++
+     // TppMain.lua, called automatically on mission start
+     int l_CreateHostSession(lua_State *L) {
+         spdlog::info(__PRETTY_FUNCTION__);
+@@ -425,6 +456,7 @@
+             {"GetPlayerPosition", l_GetPlayerPosition},
+             {"WarpToPartner", l_WarpToPartner},
+             {"IsSynchronized", l_IsSynchronized},
++            {"ReadRuntimeObservation", l_ReadRuntimeObservation},
+             {"RequestVar", l_RequestVar},
+             {"Ping", l_Ping},
+             {"Log", l_Log},
+@@ -437,4 +469,4 @@
+         };
+         luaI_openlib(L, "Dynamite", libFuncs, 0);
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/hook/src/DynamiteLua.h b/hook/src/DynamiteLua.h
+--- a/hook/src/DynamiteLua.h
++++ b/hook/src/DynamiteLua.h
+@@ -25,6 +25,7 @@
+     int l_GetPlayerPosition(lua_State *L);
+     int l_WarpToPartner(lua_State *L);
+     int l_IsSynchronized(lua_State *L);
++    int l_ReadRuntimeObservation(lua_State *L);
+     int l_RequestVar(lua_State *L);
+     int l_Ping(lua_State *L);
+     int l_Log(lua_State *L);
+diff --git a/hook/src/DynamiteSyncImpl/InitialVarSync.h b/hook/src/DynamiteSyncImpl/InitialVarSync.h
+--- a/hook/src/DynamiteSyncImpl/InitialVarSync.h
++++ b/hook/src/DynamiteSyncImpl/InitialVarSync.h
+@@ -14,6 +14,18 @@
+     // A generation rejects handlers overlapping a local reset; it is not a wire epoch.
+     class InitialVarSync {
+       public:
++        struct Inspection {
++            std::uint64_t generation;
++            std::size_t required;
++            std::size_t applied;
++        };
++
++        Inspection Inspect() const {
++            std::lock_guard lock(mutex);
++            return {generation, status.size(), static_cast<std::size_t>(std::count_if(status.begin(), status.end(),
++                [](const auto &entry) { return entry.second; }))};
++        }
++
+         void Reset() {
+             std::lock_guard lock(mutex);
+             ++generation;
+diff --git a/hook/src/DynamiteSyncImpl/DynamiteSyncImpl.h b/hook/src/DynamiteSyncImpl/DynamiteSyncImpl.h
+--- a/hook/src/DynamiteSyncImpl/DynamiteSyncImpl.h
++++ b/hook/src/DynamiteSyncImpl/DynamiteSyncImpl.h
+@@ -28,6 +28,7 @@
+         void SyncInit();
+         void WaitForSync();
+         bool IsSynchronized();
++        InitialVarSync::Inspection ObserveInitialVariables() const { return initialVarSync.Inspect(); }
+ 
+         [[deprecated("use SteamUDPSocket")]] void CreateGameSocket();
+         [[deprecated("use SteamUDPSocket")]] void RemoveGameSocket();
+diff --git a/moddata/moddata.go b/moddata/moddata.go
+--- a/moddata/moddata.go
++++ b/moddata/moddata.go
+@@ -1119,6 +1119,10 @@
+ 		FileName:   "/Assets/tpp/script/lib/WWFreeRoam.lua",
+ 	},
+ 	{
++		SourceFile: "standalone/WWRuntimeObservation.lua",
++		FileName:   "/Assets/tpp/script/lib/WWRuntimeObservation.lua",
++	},
++	{
+ 		// 00.dat
+ 		// add script_loader
+ 		SourceFile: "standalone/Tpp.lua",
+diff --git a/moddata/standalone/Tpp.lua b/moddata/standalone/Tpp.lua
+--- a/moddata/standalone/Tpp.lua
++++ b/moddata/standalone/Tpp.lua
+@@ -56,6 +56,7 @@
+ 	"/Assets/tpp/script/lib/TppGimmick.lua",
+ 	"/Assets/tpp/script/lib/WWFreeRoamManifest.lua",
+ 	"/Assets/tpp/script/lib/WWFreeRoam.lua",
++	"/Assets/tpp/script/lib/WWRuntimeObservation.lua",
+ 	"/Assets/tpp/script/lib/TppMain.lua",
+ 	"/Assets/tpp/script/lib/TppDemoBlock.lua",
+ 	"/Assets/tpp/script/lib/TppAnimalBlock.lua",
+diff --git a/moddata/standalone/WWRuntimeObservation.lua b/moddata/standalone/WWRuntimeObservation.lua
+new file mode 100644
+--- /dev/null
++++ b/moddata/standalone/WWRuntimeObservation.lua
+@@ -0,0 +1,98 @@
++-- Passive, on-demand measurements in the caller's Lua context. No activation,
++-- transport, automatic dispatch, writes or cached Lua-state access.
++local e = { schema = 1 }
++
++local function integer(v, maximum)
++    return type(v) == "number" and v == math.floor(v) and v >= 0 and v <= maximum
++end
++local function finite(v)
++    return type(v) == "number" and v == v and math.abs(v) <= 1000000
++end
++local function call(module, name, ...)
++    local object = rawget(_G, module)
++    if type(object) ~= "table" then return nil end
++    local found, fn = pcall(function() return object[name] end)
++    if not found or type(fn) ~= "function" then return nil end
++    local ok, result = pcall(fn, ...)
++    if ok then return result end
++end
++local function member(object, name)
++    if object == nil then return nil end
++    local ok, value = pcall(function() return object[name] end)
++    if ok then return value end
++end
++local function boolean(value) if type(value) == "boolean" then return value end end
++local function vector(value)
++    if value == nil then return nil end
++    local ok, x, y, z = pcall(function() return value:GetX(), value:GetY(), value:GetZ() end)
++    if ok and finite(x) and finite(y) and finite(z) then return { x = x, y = y, z = z } end
++end
++local function sequence(value)
++    if type(value) == "string" and #value <= 128 and value:match("^[A-Za-z_][A-Za-z0-9_]+$") then return value end
++end
++
++local nativeBooleans = {
++    "session_created_bookkeeping", "host_session_created_bookkeeping", "session_connected_bookkeeping",
++    "sample_counter_exhausted", "initial_vars_handlers_complete",
++}
++local memberStatuses = { unavailable = true, mod_session_not_created = true, native_api_unavailable = true,
++    main_session_unavailable = true, native_count_out_of_range = true, native_count_observed = true }
++local function nativeObservation()
++    local result = { status = "unavailable" }
++    local value = call("Dynamite", "ReadRuntimeObservation")
++    if type(value) ~= "table" or getmetatable(value) ~= nil or value.schema ~= 1
++        or value.observation_only ~= true or value.can_authorize ~= false then return result end
++    result.status = "observed"
++    result.native_available = boolean(value.native_available)
++    if value.configured_role == "host" or value.configured_role == "client" or value.configured_role == "unknown" then
++        result.configured_role = value.configured_role
++    end
++    for _, key in ipairs(nativeBooleans) do result[key] = boolean(value[key]) end
++    for _, key in ipairs({"sample_id", "initial_vars_generation"}) do
++        local v = value[key]
++        if type(v) == "string" and #v <= 20 and v:match("^%d+$") then result[key] = v end
++    end
++    for _, key in ipairs({"initial_vars_required", "initial_vars_applied"}) do
++        if integer(value[key], 4) then result[key] = value[key] end
++    end
++    if memberStatuses[value.member_query_status] then result.member_query_status = value.member_query_status end
++    if value.member_query_status == "native_count_observed" and integer(value.engine_member_count, 16) then
++        result.engine_member_count = value.engine_member_count
++    end
++    return result
++end
++
++function e.Snapshot()
++    local result = { schema = 1, observation_only = true, can_authorize = false,
++        coherent_snapshot_verified = false, native = nativeObservation(), context = {}, player_slots = {} }
++    local context, varsObject = result.context, rawget(_G, "vars")
++    local mission, location = member(varsObject, "missionCode"), member(varsObject, "locationCode")
++    if integer(mission, 65535) then context.mission = mission end
++    if integer(location, 65535) then context.location = location end
++    context.sequence_name = sequence(call("TppSequence", "GetCurrentSequenceName"))
++    local index = call("TppSequence", "GetCurrentSequenceIndex")
++    if integer(index, 65535) then context.sequence_index = index end
++    context.prepare_finished = boolean(call("TppSequence", "IsMissionPrepareFinished"))
++    context.not_playable = boolean(call("TppDemo", "IsNotPlayable"))
++    context.world_center = vector(call("TppCoder", "GetWorldCenter"))
++    local x, y, z = member(varsObject, "playerPosX"), member(varsObject, "playerPosY"), member(varsObject, "playerPosZ")
++    if finite(x) and finite(y) and finite(z) then context.local_position = { x = x, y = y, z = z } end
++    local localIndex = call("PlayerInfo", "GetLocalPlayerIndex")
++    if integer(localIndex, 1) then context.local_player_index = localIndex end
++    local gameObject = rawget(_G, "GameObject")
++    local nullId = member(gameObject, "NULL_ID")
++    if type(gameObject) == "table" and integer(nullId, 65535) then
++        for slot = 0, 1 do
++            local id = call("GameObject", "GetGameObjectIdByIndex", "TppPlayer2", slot)
++            if integer(id, 65535) then result.player_slots["slot" .. slot .. "_present"] = id ~= nullId end
++        end
++    end
++    -- Presence is deliberately separate from realization/liveness; every proof
++    -- remains unavailable, even for a two-member session with two allocated slots.
++    result.verification = { peer_liveness = false, player_realization = false, same_world = false,
++        center_agreement = false, complete_initial_sync = false, protocol_epoch = false,
++        playable_free_roam_contract = false, save_isolation = false }
++    return result
++end
++
++return e
+diff --git a/moddata/runtime_observation_test.go b/moddata/runtime_observation_test.go
+new file mode 100644
+--- /dev/null
++++ b/moddata/runtime_observation_test.go
+@@ -0,0 +1,30 @@
++package moddata
++
++import (
++	"strings"
++	"testing"
++)
++
++func TestRuntimeObservationModuleEmbeddedAndMappedOnce(t *testing.T) {
++	const source = "standalone/WWRuntimeObservation.lua"
++	const target = "/Assets/tpp/script/lib/WWRuntimeObservation.lua"
++	if _, err := ModData.ReadFile(source); err != nil {
++		t.Fatal(err)
++	}
++	count := 0
++	for _, replacement := range ReplaceInQAR {
++		if replacement.FileName == target {
++			if replacement.SourceFile != source {
++				t.Fatal("observer source mapping differs")
++			}
++			count++
++		}
++	}
++	declaration, err := ModData.ReadFile("standalone/Tpp.lua")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if count != 1 || strings.Count(string(declaration), target) != 1 {
++		t.Fatal("observer must be embedded, mapped and declared exactly once")
++	}
++}

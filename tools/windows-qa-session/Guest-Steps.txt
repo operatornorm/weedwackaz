@@ -1,0 +1,22 @@
+Stable MGSV test session - review first
+
+Only new per-run Input (read-only) and Output (writable reports) are mapped.
+No existing Steam, userdata or game folder is shared. The Output mapping is a
+writable host surface: keep Steam at its default guest C: installation path.
+
+1. Install/update Steam using Steam-installation.txt. The previous anonymous
+   preparation guest proved compatibility; this new profile needs installation
+   once more because Sandbox cannot change mappings on that existing guest.
+2. Stop at sign-in. Open Guest-Prelogin.txt and copy the WHOLE & { ... } block
+   into normal Windows PowerShell INSIDE THIS Sandbox. It verifies expected
+   guest Steam/profile storage and the read-only input, then writes prelogin.gate.
+3. Return prelogin.gate from the host Output folder. Wait for its validation and
+   explicit guest-account approval before signing in. Do not send Steam logs,
+   screenshots, passwords, Steam Guard codes or account files.
+4. STOP here. Login, Cloud settings, network isolation and game staging are not
+   part of this package. The next step follows review of prelogin.gate.
+
+These scripts never start MGSV, send invitations, export account data or claim
+working co-op. Storage checks are observations of this harness, not
+VM attestation or proof against a compromised OS. Actual Windows execution of
+this new profile and this gate remains untested until the owner-run result.

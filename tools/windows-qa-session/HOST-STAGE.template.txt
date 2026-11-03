@@ -1,0 +1,98 @@
+& {
+    $ErrorActionPreference = 'Stop'
+    Set-StrictMode -Version 2.0
+    if ([Security.Principal.WindowsIdentity]::GetCurrent().Name -match '\\WDAGUtilityAccount$') { throw 'Run on normal Windows, OUTSIDE Sandbox.' }
+    $mgsvRun = '__EXPECTED_RUN__'
+    $mgsvSession = '__EXPECTED_SESSION__'
+    $mgsvOfflineReceiptHash = '__OFFLINE_RECEIPT_SHA256__'
+    $mgsvGuestTag = '__GUEST_STAGE_SHA256__'
+    $mgsvExeTag = 'f3818d172293800171a344a71957bc7257f591bbf7c1792e10fef6bfbba7f4f2'
+    $mgsvSteamTag = '08bd0152356e5619ee56a6714ac951b6800dbb21821693a4efaf85278442c60a'
+    $mgsvRoot = Join-Path ([Environment]::GetFolderPath('UserProfile')) ('Downloads\MGSV-QA-' + $mgsvRun)
+    $mgsvInput = Join-Path $mgsvRoot 'Input'
+    $mgsvOutput = Join-Path $mgsvRoot 'Output'
+    foreach ($mgsvPath in @($mgsvRoot, $mgsvInput, $mgsvOutput)) {
+        $mgsvItem = Get-Item -LiteralPath $mgsvPath -Force
+        if (-not $mgsvItem.PSIsContainer -or ($mgsvItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unexpected QA directory.' }
+    }
+    if ((Get-FileHash -LiteralPath (Join-Path $mgsvOutput 'offline.gate') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $mgsvOfflineReceiptHash) { throw 'Wrong offline receipt.' }
+    if ((Test-Path -LiteralPath (Join-Path $mgsvRoot 'MGSV-Test.wsb')) -or -not (Test-Path -LiteralPath (Join-Path $mgsvRoot 'MGSV-Test.online-retired'))) { throw 'The online Sandbox launcher must remain retired.' }
+    foreach ($mgsvPath in @((Join-Path $mgsvInput 'Game'), (Join-Path $mgsvInput 'stage-request.json'), (Join-Path $mgsvInput 'game-stage-manifest.json'), (Join-Path $mgsvOutput 'stage-ready.gate'), (Join-Path $mgsvOutput 'game-stage-result.json'))) {
+        if (Test-Path -LiteralPath $mgsvPath) { throw 'This staging run already exists. Do not overwrite or reuse it.' }
+    }
+    Add-Type -AssemblyName System.Windows.Forms
+    function Select-MgsvFile($mgsvTitle, $mgsvFilter) {
+        $mgsvDialog = [Windows.Forms.OpenFileDialog]::new()
+        $mgsvDialog.Title = $mgsvTitle
+        $mgsvDialog.Filter = $mgsvFilter
+        try {
+            if ($mgsvDialog.ShowDialog() -ne [Windows.Forms.DialogResult]::OK) { throw 'Cancelled.' }
+            return $mgsvDialog.FileName
+        } finally { $mgsvDialog.Dispose() }
+    }
+    $mgsvGuestSource = Select-MgsvFile 'Select GUEST-STAGE.txt from the newly extracted staging package' 'Guest staging instructions (GUEST-STAGE.txt)|GUEST-STAGE.txt'
+    if ((Get-FileHash -LiteralPath $mgsvGuestSource -Algorithm SHA256).Hash.ToLowerInvariant() -ne $mgsvGuestTag) { throw 'Wrong guest instructions.' }
+    $mgsvSelectedExe = Select-MgsvFile 'Select mgsvtpp.exe in your existing OLD 1.0.15.3 game copy' 'MGSV executable (mgsvtpp.exe)|mgsvtpp.exe'
+    $mgsvSource = [IO.Path]::GetDirectoryName($mgsvSelectedExe)
+    if ((Get-FileHash -LiteralPath $mgsvSelectedExe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $mgsvExeTag) { throw 'Wrong game executable; expected the previously verified 1.0.15.3 copy.' }
+    if ((Get-FileHash -LiteralPath (Join-Path $mgsvSource 'steam_api64.dll') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $mgsvSteamTag) { throw 'Wrong original Steam DLL.' }
+    $mgsvStock00 = Join-Path $mgsvSource 'master\0\00.dat'
+    if ((Get-FileHash -LiteralPath $mgsvStock00 -Algorithm MD5).Hash.ToLowerInvariant() -ne '2779dcc79b7b700ed70b3900344cc164') {
+        $mgsvStock00 = Join-Path $mgsvSource 'master\0\00.dat.vendor'
+        if ((Get-FileHash -LiteralPath $mgsvStock00 -Algorithm MD5).Hash.ToLowerInvariant() -ne '2779dcc79b7b700ed70b3900344cc164') { throw 'No matching stock 00.dat or vendor backup. No game files were copied.' }
+    }
+    $mgsvPaths = @('mgsvtpp.exe', 'steam_api64.dll', 'master/0/00.dat', 'master/0/01.dat', 'master/chunk0.dat', 'master/chunk1.dat', 'master/chunk2.dat', 'master/chunk3.dat', 'master/chunk4.dat', 'master/data1.dat')
+    $mgsvSources = @{}
+    $mgsvTotal = [long]0
+    foreach ($mgsvRelative in $mgsvPaths) {
+        $mgsvPath = Join-Path $mgsvSource $mgsvRelative
+        if ($mgsvRelative -eq 'master/0/00.dat') { $mgsvPath = $mgsvStock00 }
+        $mgsvItem = Get-Item -LiteralPath $mgsvPath -Force
+        if ($mgsvItem.PSIsContainer -or $mgsvItem.Length -le 0 -or ($mgsvItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Invalid source game file.' }
+        $mgsvSources[$mgsvRelative] = $mgsvPath
+        $mgsvTotal += $mgsvItem.Length
+    }
+    $mgsvDrive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($mgsvRoot))
+    if ($mgsvDrive.AvailableFreeSpace -lt (2 * $mgsvTotal + 4GB)) { throw ('Not enough free space on the QA drive. Need at least {0:N1} GiB for two copies and headroom.' -f ((2 * $mgsvTotal + 4GB) / 1GB)) }
+    [IO.File]::Copy($mgsvGuestSource, (Join-Path $mgsvInput 'GUEST-STAGE.txt'), $false)
+    if ((Get-FileHash -LiteralPath (Join-Path $mgsvInput 'GUEST-STAGE.txt') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $mgsvGuestTag) { throw 'Staged instruction hash mismatch.' }
+    $mgsvChallenge = [Guid]::NewGuid().ToString('N')
+    $mgsvRequest = [ordered]@{ schema=1; stage='game-stage-v1'; run=$mgsvRun; session=$mgsvSession; challenge=$mgsvChallenge; source_tag=$mgsvGuestTag }
+    [IO.File]::WriteAllText((Join-Path $mgsvInput 'stage-request.json'), ($mgsvRequest | ConvertTo-Json), [Text.Encoding]::UTF8)
+    Write-Output 'Keep this HOST PowerShell window open. It is waiting; no game data has been copied.'
+    Write-Output 'INSIDE the same Sandbox: run the whole C:\MGSVQA\Input\GUEST-STAGE.txt block in a fresh administrator PowerShell.'
+    $mgsvReadyPath = Join-Path $mgsvOutput 'stage-ready.gate'
+    $mgsvExpectedReady = "WWQA3`n$mgsvRun`n$mgsvSession`n$mgsvChallenge`nprestage`n$mgsvGuestTag`n1,1,1,1`n"
+    $mgsvClock = [Diagnostics.Stopwatch]::StartNew()
+    while (-not (Test-Path -LiteralPath $mgsvReadyPath)) {
+        if ($mgsvClock.Elapsed.TotalMinutes -gt 20) { throw 'Timed out waiting for guest cutoff. No game data was copied.' }
+        Start-Sleep -Seconds 2
+    }
+    if ((Get-Item -LiteralPath $mgsvReadyPath).Length -gt 512 -or [IO.File]::ReadAllText($mgsvReadyPath) -cne $mgsvExpectedReady) { throw 'Guest cutoff report does not match this fresh staging request.' }
+    $mgsvGame = Join-Path $mgsvInput 'Game'
+    [IO.Directory]::CreateDirectory($mgsvGame) | Out-Null
+    $mgsvFiles = @()
+    $mgsvIndex = 0
+    foreach ($mgsvRelative in $mgsvPaths) {
+        $mgsvIndex++
+        Write-Output ('Copying host file {0}/10: {1}' -f $mgsvIndex, $mgsvRelative)
+        $mgsvDestination = Join-Path $mgsvGame $mgsvRelative
+        [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($mgsvDestination)) | Out-Null
+        $mgsvRead = [IO.File]::Open($mgsvSources[$mgsvRelative], [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        try {
+            $mgsvWrite = [IO.File]::Open($mgsvDestination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try { $mgsvRead.CopyTo($mgsvWrite); $mgsvWrite.Flush() } finally { $mgsvWrite.Dispose() }
+        } finally { $mgsvRead.Dispose() }
+        $mgsvHash = (Get-FileHash -LiteralPath $mgsvDestination -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($mgsvRelative -eq 'mgsvtpp.exe' -and $mgsvHash -ne $mgsvExeTag) { throw 'Executable changed during staging.' }
+        if ($mgsvRelative -eq 'steam_api64.dll' -and $mgsvHash -ne $mgsvSteamTag) { throw 'Steam DLL changed during staging.' }
+        if ($mgsvRelative -eq 'master/0/00.dat' -and (Get-FileHash -LiteralPath $mgsvDestination -Algorithm MD5).Hash.ToLowerInvariant() -ne '2779dcc79b7b700ed70b3900344cc164') { throw 'Stock 00.dat changed during staging.' }
+        $mgsvFiles += [ordered]@{path=$mgsvRelative; bytes=(Get-Item -LiteralPath $mgsvDestination).Length; sha256=$mgsvHash}
+    }
+    $mgsvManifest = [ordered]@{schema=1;stage='game-stage-v1';run=$mgsvRun;session=$mgsvSession;challenge=$mgsvChallenge;source_tag=$mgsvGuestTag;files=$mgsvFiles}
+    $mgsvTemporary = Join-Path $mgsvInput 'game-stage-manifest.json.tmp'
+    [IO.File]::WriteAllText($mgsvTemporary, ($mgsvManifest | ConvertTo-Json -Depth 4), [Text.Encoding]::UTF8)
+    [IO.File]::Move($mgsvTemporary, (Join-Path $mgsvInput 'game-stage-manifest.json'))
+    Write-Output 'Host copy complete. The guest script will now copy and verify the files inside Sandbox.'
+    Write-Output 'No game was launched. Keep the Sandbox open and offline.'
+}

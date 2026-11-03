@@ -1,0 +1,8 @@
+__pycache__/
+build-logs/
+build-artifacts/
+build-cache/
+local/
+attachments/
+.env
+.env.*

@@ -1,0 +1,36 @@
+& {
+    $ErrorActionPreference = 'Stop'
+    if ([Security.Principal.WindowsIdentity]::GetCurrent().Name -match '\\WDAGUtilityAccount$') { throw 'Run on normal Windows, OUTSIDE Sandbox.' }
+    $mgsvRun = '__EXPECTED_RUN__'
+    $mgsvSession = '__EXPECTED_SESSION__'
+    $mgsvGuestTag = '__GUEST_STARTUP_SHA256__'
+    $mgsvManifestTag = '__STAGE_MANIFEST_SHA256__'
+    $mgsvResultTag = '__STAGE_RESULT_SHA256__'
+    $mgsvRoot = Join-Path ([Environment]::GetFolderPath('UserProfile')) ('Downloads\MGSV-QA-' + $mgsvRun)
+    $mgsvInput = Join-Path $mgsvRoot 'Input'
+    $mgsvOutput = Join-Path $mgsvRoot 'Output'
+    foreach ($mgsvPath in @($mgsvRoot, $mgsvInput, $mgsvOutput)) {
+        $mgsvItem = Get-Item -LiteralPath $mgsvPath -Force
+        if (-not $mgsvItem.PSIsContainer -or ($mgsvItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unexpected QA directory.' }
+    }
+    if ((Test-Path -LiteralPath (Join-Path $mgsvRoot 'MGSV-Test.wsb')) -or -not (Test-Path -LiteralPath (Join-Path $mgsvRoot 'MGSV-Test.online-retired'))) { throw 'Keep the online launcher retired.' }
+    if ((Get-FileHash -LiteralPath (Join-Path $mgsvInput 'game-stage-manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $mgsvManifestTag -or (Get-FileHash -LiteralPath (Join-Path $mgsvOutput 'game-stage-result.json') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $mgsvResultTag) { throw 'Staging evidence differs from the accepted reports.' }
+    foreach ($mgsvPath in @((Join-Path $mgsvInput 'GUEST-STARTUP.txt'), (Join-Path $mgsvInput 'startup-request.json'), (Join-Path $mgsvOutput 'startup-result.json'))) { if (Test-Path -LiteralPath $mgsvPath) { throw 'A startup run already exists. Do not overwrite or repeat it.' } }
+    Add-Type -AssemblyName System.Windows.Forms
+    $mgsvDialog = [Windows.Forms.OpenFileDialog]::new()
+    $mgsvDialog.Title = 'Select GUEST-STARTUP.txt from the extracted startup package'
+    $mgsvDialog.Filter = 'Guest startup instructions (GUEST-STARTUP.txt)|GUEST-STARTUP.txt'
+    try {
+        if ($mgsvDialog.ShowDialog() -ne [Windows.Forms.DialogResult]::OK) { throw 'Cancelled.' }
+        $mgsvSource = $mgsvDialog.FileName
+    } finally { $mgsvDialog.Dispose() }
+    if ((Get-FileHash -LiteralPath $mgsvSource -Algorithm SHA256).Hash.ToLowerInvariant() -ne $mgsvGuestTag) { throw 'Wrong guest startup instructions.' }
+    [IO.File]::Copy($mgsvSource, (Join-Path $mgsvInput 'GUEST-STARTUP.txt'), $false)
+    if ((Get-FileHash -LiteralPath (Join-Path $mgsvInput 'GUEST-STARTUP.txt') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $mgsvGuestTag) { throw 'Staged source mismatch.' }
+    $mgsvRequest = [ordered]@{schema=1;stage='startup-v1';run=$mgsvRun;session=$mgsvSession;challenge=[Guid]::NewGuid().ToString('N');source_tag=$mgsvGuestTag;manifest_sha256=$mgsvManifestTag;result_sha256=$mgsvResultTag}
+    $mgsvBytes = [Text.Encoding]::UTF8.GetBytes(($mgsvRequest | ConvertTo-Json))
+    $mgsvFile = [IO.File]::Open((Join-Path $mgsvInput 'startup-request.json'), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $mgsvFile.Write($mgsvBytes, 0, $mgsvBytes.Length); $mgsvFile.Flush() } finally { $mgsvFile.Dispose() }
+    Write-Output 'Startup instructions staged. No Steam or game process was started on the host.'
+    Write-Output 'After approval, run C:\MGSVQA\Input\GUEST-STARTUP.txt INSIDE the same offline Sandbox.'
+}

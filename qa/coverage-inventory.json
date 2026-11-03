@@ -1,0 +1,619 @@
+{
+  "kind": "source_inventory_only",
+  "source_repository": "https://github.com/unknown321/dynamite",
+  "source_commit": "7fe74d31128ed8d3741b07181cb99e4adc1f57be",
+  "target": {
+    "players": 2,
+    "primary_platform": "Windows",
+    "secondary_platform": "Linux/Proton",
+    "story": "all including prologue and variants",
+    "side_ops": "all",
+    "free_roam": "all"
+  },
+  "limitations": [
+    "Eligibility is not proof of gameplay, correct difficulty, assets or synchronization.",
+    "The outdated misc list supplies names/IDs only; its old playability annotations are ignored.",
+    "Source declarations do not enumerate all Side Ops or prove completeness of Free Roam locations.",
+    "No entry is promoted to tested by this inventory tool."
+  ],
+  "summary": {
+    "story_entries": 51,
+    "explicitly_eligible_story_ids": 36,
+    "direct_story_package_patches": 52,
+    "story_ids_with_direct_package_patches": 35,
+    "source_known_free_roam_containers": 3,
+    "gameplay_validated_entries": 0
+  },
+  "story": [
+    {
+      "mission_number": 0,
+      "game_mission_code": 10010,
+      "name": "PROLOGUE: AWAKENING",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "direct_story_package_patches": 0,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 1,
+      "game_mission_code": 10020,
+      "name": "PHANTOM LIMBS",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 2,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 2,
+      "game_mission_code": 10030,
+      "name": "DIAMOND DOGS",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "direct_story_package_patches": 0,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 3,
+      "game_mission_code": 10036,
+      "name": "A HERO’S WAY",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 4,
+      "game_mission_code": 10043,
+      "name": "C2W",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 5,
+      "game_mission_code": 10033,
+      "name": "OVER THE FENCE",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 6,
+      "game_mission_code": 10040,
+      "name": "WHERE DO THE BEES SLEEP?",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 7,
+      "game_mission_code": 10041,
+      "name": "RED BRASS",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 8,
+      "game_mission_code": 10044,
+      "name": "OCCUPATION FORCES",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 9,
+      "game_mission_code": 10054,
+      "name": "BACKUP, BACK DOWN",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 10,
+      "game_mission_code": 10052,
+      "name": "ANGEL WITH BROKEN WINGS",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 11,
+      "game_mission_code": 10050,
+      "name": "CLOAKED IN SILENCE",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 2,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 12,
+      "game_mission_code": 10070,
+      "name": "HELLBOUND",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 4,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 13,
+      "game_mission_code": 10080,
+      "name": "PITCH DARK",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 3,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 14,
+      "game_mission_code": 10086,
+      "name": "LINGUA FRANCA",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 15,
+      "game_mission_code": 10082,
+      "name": "FOOTPRINTS OF PHANTOMS",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 16,
+      "game_mission_code": 10090,
+      "name": "TRAITORS’ CARAVAN",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 17,
+      "game_mission_code": 10091,
+      "name": "RESCUE THE INTEL AGENTS",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 18,
+      "game_mission_code": 10100,
+      "name": "BLOOD RUNS DEEP",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 2,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 19,
+      "game_mission_code": 10195,
+      "name": "ON THE TRAIL",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 20,
+      "game_mission_code": 10110,
+      "name": "VOICES",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 2,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 21,
+      "game_mission_code": 10121,
+      "name": "THE WAR ECONOMY",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 22,
+      "game_mission_code": 10115,
+      "name": "RETAKE THE PLATFORM",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "direct_story_package_patches": 0,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 23,
+      "game_mission_code": 10120,
+      "name": "THE WHITE MAMBA",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 24,
+      "game_mission_code": 10085,
+      "name": "CLOSE CONTACT",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 25,
+      "game_mission_code": 10200,
+      "name": "AIM TRUE, YE VENGEFUL",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 26,
+      "game_mission_code": 10211,
+      "name": "HUNTING DOWN",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 27,
+      "game_mission_code": 10081,
+      "name": "ROOT CAUSE",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 28,
+      "game_mission_code": 10130,
+      "name": "CODE TALKER",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 3,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 29,
+      "game_mission_code": 10140,
+      "name": "METALLIC ARCHAEA",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 3,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 30,
+      "game_mission_code": 10150,
+      "name": "SKULL FACE",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 3,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 31,
+      "game_mission_code": 10151,
+      "name": "SAHELANTHROPUS",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 2,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 32,
+      "game_mission_code": 10045,
+      "name": "TO KNOW TOO MUCH",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 33,
+      "game_mission_code": 11043,
+      "name": "[SUBSISTENCE] C2W",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "direct_story_package_patches": 0,
+      "loader_alias_of": 10043,
+      "alias_base_writes_base_mission_id": true,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 34,
+      "game_mission_code": 11054,
+      "name": "[EXTREME] BACKUP, BACK DOWN",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "direct_story_package_patches": 0,
+      "loader_alias_of": 10054,
+      "alias_base_writes_base_mission_id": true,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 35,
+      "game_mission_code": 10093,
+      "name": "CURSED LEGACY",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 36,
+      "game_mission_code": 11082,
+      "name": "[TOTAL STEALTH] FOOTPRINTS OF PHANTOMS",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "direct_story_package_patches": 0,
+      "loader_alias_of": 10082,
+      "alias_base_writes_base_mission_id": true,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 37,
+      "game_mission_code": 11090,
+      "name": "[EXTREME] TRAITORS’ CARAVAN",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "direct_story_package_patches": 0,
+      "loader_alias_of": 10090,
+      "alias_base_writes_base_mission_id": true,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 38,
+      "game_mission_code": 10156,
+      "name": "EXTRAORDINARY",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 39,
+      "game_mission_code": 11033,
+      "name": "[TOTAL STEALTH] OVER THE FENCE",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "direct_story_package_patches": 0,
+      "loader_alias_of": 10033,
+      "alias_base_writes_base_mission_id": true,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 40,
+      "game_mission_code": 11050,
+      "name": "[EXTREME] CLOAKED IN SILENCE",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "direct_story_package_patches": 0,
+      "loader_alias_of": 10050,
+      "alias_base_writes_base_mission_id": true,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 41,
+      "game_mission_code": 10171,
+      "name": "PROXY WAR WITHOUT END",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 42,
+      "game_mission_code": 11140,
+      "name": "[EXTREME] METALLIC ARCHAEA",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "direct_story_package_patches": 0,
+      "loader_alias_of": 10140,
+      "alias_base_writes_base_mission_id": true,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 43,
+      "game_mission_code": 10240,
+      "name": "SHINING LIGHTS, EVEN IN DEATH",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 2,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 44,
+      "game_mission_code": 11080,
+      "name": "[TOTAL STEALTH] PITCH DARK",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "direct_story_package_patches": 0,
+      "loader_alias_of": 10080,
+      "alias_base_writes_base_mission_id": true,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 45,
+      "game_mission_code": 10260,
+      "name": "A QUIET EXIT",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 1,
+      "loader_alias_of": null,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 46,
+      "game_mission_code": 10280,
+      "name": "TRUTH: THE MAN WHO SOLD THE WORLD",
+      "requested": true,
+      "upstream_predicate_enabled": true,
+      "direct_story_package_patches": 0,
+      "loader_alias_of": 10010,
+      "alias_base_writes_base_mission_id": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 47,
+      "game_mission_code": 11121,
+      "name": "[TOTAL STEALTH] THE WAR ECONOMY",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "direct_story_package_patches": 0,
+      "loader_alias_of": 10121,
+      "alias_base_writes_base_mission_id": true,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 48,
+      "game_mission_code": 11130,
+      "name": "[EXTREME] CODE TALKER",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "direct_story_package_patches": 0,
+      "loader_alias_of": 10130,
+      "alias_base_writes_base_mission_id": true,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 49,
+      "game_mission_code": 11044,
+      "name": "[SUBSISTENCE] OCCUPATION FORCES",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "direct_story_package_patches": 0,
+      "loader_alias_of": 10044,
+      "alias_base_writes_base_mission_id": true,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "mission_number": 50,
+      "game_mission_code": 11151,
+      "name": "[EXTREME] SAHELANTHROPUS",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "direct_story_package_patches": 0,
+      "loader_alias_of": 10151,
+      "alias_base_writes_base_mission_id": true,
+      "gameplay_validation": "not_run"
+    }
+  ],
+  "free_roam": [
+    {
+      "game_mission_code": 30010,
+      "location": "Afghanistan",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "game_mission_code": 30020,
+      "location": "Africa",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "gameplay_validation": "not_run"
+    },
+    {
+      "game_mission_code": 30050,
+      "location": "Mother Base",
+      "requested": true,
+      "upstream_predicate_enabled": false,
+      "gameplay_validation": "not_run"
+    }
+  ],
+  "side_ops": {
+    "requested": "all",
+    "individual_quest_inventory": "pending",
+    "gameplay_validation": "not_run",
+    "next_input": "Version-matched quest metadata and runtime observations from isolated game copies"
+  }
+}

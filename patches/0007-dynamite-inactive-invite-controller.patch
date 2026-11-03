@@ -1,0 +1,318 @@
+diff --git a/hook/CMakeLists.txt b/hook/CMakeLists.txt
+--- a/hook/CMakeLists.txt
++++ b/hook/CMakeLists.txt
+@@ -72,6 +72,7 @@
+ )
+ 
+ add_library(${PROJECT_NAME} SHARED
++        src/SteamInviteController.cpp
+         src/SteamInviteProbe.cpp
+         src/mgsvtpp_funcptr_defs.cpp
+         src/mgsvtpp_funcptr_set.cpp
+diff --git a/hook/src/SteamInviteController.h b/hook/src/SteamInviteController.h
+new file mode 100644
+--- /dev/null
++++ b/hook/src/SteamInviteController.h
+@@ -0,0 +1,96 @@
++#ifndef DYNAMITE_STEAM_INVITE_CONTROLLER_H
++#define DYNAMITE_STEAM_INVITE_CONTROLLER_H
++
++#include "SteamInviteBindings.h"
++
++namespace Dynamite::Invites {
++    enum class Role { None, Host, Guest };
++    enum class Phase { Stopped, Idle, Deferred, StartingHost, Hosting, Preparing, Connecting, AwaitingPeer, Closing, CleanupBlocked };
++    enum class ActionKind { StartHost, PrepareTarget, ConnectGuest, ReleaseOwned };
++
++    // Supplied by a future verified native engine adapter, never by the passive
++    // observation/status-file reader. In particular, core.connected and slot
++    // presence cannot supply these contracts. No production provider exists yet.
++    struct WorldFrame {
++        std::uint64_t sample = 0, generation = 0;
++        ActivationProof contracts;
++        bool noForeignSession = false, safeToPrepare = false;
++        bool targetVerified = false, playable = false, sidecarReady = false;
++        std::string target;
++    };
++    struct EngineAction {
++        // The adapter keys its owned resources by (run, ownership). ReleaseOwned
++        // must quiesce/release that context, never an unrelated current session.
++        std::uint64_t run = 0, ticket = 0, ownership = 0, engineGeneration = 0;
++        ActionKind kind;
++        Role role;
++        Intent session;
++        bool operator==(const EngineAction &) const = default;
++    };
++    struct ControllerStatus {
++        Phase phase;
++        Role role;
++        bool running, cleanupOwned, actionOutstanding, clockInvalid;
++        std::uint64_t run;
++        std::optional<Intent> active, pending;
++        // AwaitingPeer means only that the connect action was acknowledged.
++        // It is deliberately not a Joined state or a co-op readiness proof.
++    };
++
++    // Inactive until explicitly started. There is no production instance/caller.
++    // Owns control state, not the engine or SDK lifetime. Keep context/module and
++    // callback storage alive and quiescent as required by Channel. No destructor
++    // unregisters, calls the engine, or runs under loader lock.
++    class Controller {
++      public:
++        Controller(Context context, CallbackQueue &callback);
++        Controller(const Controller &) = delete;
++        Controller &operator=(const Controller &) = delete;
++        bool Start(const ActivationProof &contracts);
++        bool RequestHost(const Intent &session, std::uint64_t now);
++        bool AcceptCold(std::span<const std::string_view> args, std::uint64_t now);
++        std::optional<EngineAction> Next(const WorldFrame &frame, std::uint64_t now);
++        // Exactly one acknowledgement per issued ticket. Success means the
++        // adapter observed completion/quiescence, not just a native call issued.
++        // On failure/throw, acknowledge false; possible ownership is retained.
++        bool Complete(const EngineAction &action, bool success);
++        bool Send(std::uint64_t friendId, const WorldFrame &frame, std::uint64_t now);
++        bool RenewHost(std::uint64_t expires, std::uint64_t now);
++        bool Cancel();
++        bool RetryCleanup();
++        bool Stop();
++        std::optional<ControllerStatus> Status() const;
++      private:
++        // SDK calls are external code too. Nested control calls are rejected;
++        // only Channel's bounded callback-copy queue may run during an operation.
++        struct Operation {
++            bool &busy;
++            bool entered;
++            explicit Operation(bool &busy) : busy(busy), entered(!busy) { if (entered) busy = true; }
++            ~Operation() { if (entered) busy = false; }
++            Operation(const Operation &) = delete;
++            Operation &operator=(const Operation &) = delete;
++            explicit operator bool() const { return entered; }
++        };
++        struct Selection { Role role; Intent session; };
++        bool CurrentContext() const;
++        bool Time(std::uint64_t now);
++        bool Valid(const Selection &selection, std::uint64_t now) const;
++        bool Select(const Selection &selection, std::uint64_t now);
++        bool Fresh(const WorldFrame &frame);
++        void ObserveRevocation(const WorldFrame &frame, bool contextReady);
++        void Retire();
++        void RestingPhase();
++        std::optional<EngineAction> Issue(ActionKind kind, const WorldFrame &frame);
++        Context context;
++        Channel channel;
++        bool running = false, callbacksStopped = true, retiring = false, cleanupBlocked = false;
++        bool clockInvalid = false, inOperation = false;
++        std::uint64_t run = 0, tickets = 0, ownership = 0, lastSample = 0, lastGeneration = 0, lastNow = 0, preparedAfter = 0, ownedGeneration = 0;
++        Phase phase = Phase::Stopped;
++        std::optional<Selection> pending, owned;
++        std::optional<EngineAction> outstanding;
++        std::vector<Intent> accepted;
++    };
++}
++#endif
+diff --git a/hook/src/SteamInviteController.cpp b/hook/src/SteamInviteController.cpp
+new file mode 100644
+--- /dev/null
++++ b/hook/src/SteamInviteController.cpp
+@@ -0,0 +1,201 @@
++#include "SteamInviteController.h"
++
++namespace Dynamite::Invites {
++    Controller::Controller(Context context, CallbackQueue &callback) : context(context), channel(context, callback) {}
++
++    bool Controller::CurrentContext() const {
++        Context current;
++        return context.OnOwner() && Bind(context.api, current) == BindStatus::Bound
++            && current.local == context.local && current.friends == context.friends;
++    }
++    bool Controller::Start(const ActivationProof &contracts) {
++        if (!context.OnOwner()) return false;
++        Operation operation(inOperation);
++        if (!operation || running || !callbacksStopped || owned || outstanding || clockInvalid
++            || !contracts.Complete() || run == std::numeric_limits<std::uint64_t>::max() || !CurrentContext()) return false;
++        // Even a failed registration may have a cleanup obligation.
++        callbacksStopped = false;
++        if (!channel.StartObserving()) { callbacksStopped = channel.Stop(); return false; }
++        ++run; running = true; lastSample = lastGeneration = preparedAfter = ownedGeneration = 0;
++        pending.reset(); retiring = cleanupBlocked = false; phase = Phase::Idle;
++        return true;
++    }
++    bool Controller::Time(std::uint64_t now) {
++        if (!now || clockInvalid || (lastNow && now < lastNow)) {
++            clockInvalid = true; Retire(); return false;
++        }
++        lastNow = now; return true;
++    }
++    bool Controller::Valid(const Selection &selection, std::uint64_t now) const {
++        if (!Parse(Encode(selection.session), now)) return false;
++        if (selection.role == Role::Host) return selection.session.host == context.local;
++        return selection.role == Role::Guest && selection.session.host != context.local
++            && context.api.relationship(context.friends, {selection.session.host}) == 3;
++    }
++    bool Controller::Select(const Selection &selection, std::uint64_t now) {
++        if (!running || clockInvalid) return false;
++        if (!CurrentContext()) { Retire(); return false; }
++        if (!Valid(selection, now)) return false;
++        std::erase_if(accepted, [now](const Intent &value) { return value.expires <= now; });
++        if (accepted.size() >= 32) return false;
++        const auto supersedes = [&selection](const Intent &old) {
++            if (old == selection.session) return false;
++            return old.host != selection.session.host || old.session != selection.session.session
++                || selection.session.epoch > old.epoch || (selection.session.epoch == old.epoch
++                    && selection.session.target == old.target && selection.session.expires > old.expires);
++        };
++        // Owned/pending high-water state survives TTL pruning and host renewal.
++        if ((owned && !supersedes(owned->session)) || (pending && !supersedes(pending->session))) return false;
++        for (const auto &old : accepted) {
++            if (!supersedes(old)) return false;
++        }
++        accepted.push_back(selection.session);
++        pending = selection;
++        if (owned) retiring = true;
++        if (!outstanding && !owned) phase = Phase::Deferred;
++        return true;
++    }
++    bool Controller::RequestHost(const Intent &session, std::uint64_t now) {
++        if (!context.OnOwner()) return false;
++        Operation operation(inOperation);
++        return operation && running && Time(now) && Select({Role::Host, session}, now);
++    }
++    bool Controller::AcceptCold(std::span<const std::string_view> args, std::uint64_t now) {
++        if (!context.OnOwner()) return false;
++        Operation operation(inOperation);
++        if (!operation || !running || !Time(now)) return false;
++        const auto parsed = ColdIntent(args, now);
++        return parsed && Select({Role::Guest, *parsed}, now);
++    }
++    bool Controller::Fresh(const WorldFrame &frame) {
++        if (!frame.sample || frame.sample <= lastSample || !frame.generation) return false;
++        if (frame.generation < lastGeneration) { Retire(); return false; }
++        lastSample = frame.sample; lastGeneration = frame.generation; return true;
++    }
++    void Controller::ObserveRevocation(const WorldFrame &frame, bool contextReady) {
++        if (!contextReady || !frame.contracts.Complete()) Retire();
++        if (owned && ownedGeneration && frame.generation != ownedGeneration) retiring = true;
++        if (owned && ownedGeneration && (!frame.noForeignSession || !frame.sidecarReady
++            || (frame.targetVerified && frame.target != owned->session.target))) retiring = true;
++    }
++    void Controller::Retire() {
++        pending.reset();
++        if (owned) retiring = true;
++        if (!outstanding && !owned) RestingPhase();
++    }
++    void Controller::RestingPhase() {
++        phase = !running && callbacksStopped ? Phase::Stopped : (pending ? Phase::Deferred : Phase::Idle);
++    }
++    std::optional<EngineAction> Controller::Issue(ActionKind kind, const WorldFrame &frame) {
++        if (!owned || outstanding || tickets == std::numeric_limits<std::uint64_t>::max()) return std::nullopt;
++        if (!ownership) ownership = tickets + 1;
++        outstanding = EngineAction{run, ++tickets, ownership, frame.generation, kind, owned->role, owned->session};
++        if (kind == ActionKind::StartHost || kind == ActionKind::ConnectGuest) ownedGeneration = frame.generation;
++        if (kind == ActionKind::ReleaseOwned) phase = Phase::Closing;
++        if (kind == ActionKind::StartHost) phase = Phase::StartingHost;
++        if (kind == ActionKind::PrepareTarget) phase = Phase::Preparing;
++        if (kind == ActionKind::ConnectGuest) phase = Phase::Connecting;
++        return outstanding;
++    }
++    std::optional<EngineAction> Controller::Next(const WorldFrame &frame, std::uint64_t now) {
++        if (!context.OnOwner()) return std::nullopt;
++        Operation operation(inOperation);
++        if (!operation || !Fresh(frame)) return std::nullopt;
++        const bool goodTime = Time(now);
++        const bool contextReady = running && goodTime && CurrentContext();
++        if (contextReady && channel.Poll(now)) {
++            if (const auto intent = channel.TakeIntent(now)) Select({Role::Guest, *intent}, now);
++        }
++        ObserveRevocation(frame, contextReady);
++        if (pending && !Valid(*pending, now)) pending.reset();
++        // Host world's lifetime is independent of the invitation's TTL. Guests
++        // must finish the protocol before expiry; transport success alone cannot.
++        if (contextReady && owned && owned->role == Role::Guest && !Valid(*owned, now)) retiring = true;
++        if (outstanding) return std::nullopt;
++        if (owned && retiring) {
++            if (cleanupBlocked) return std::nullopt;
++            // Lost proofs/unknown foreign sessions cannot erase or block release
++            // of our own context. The adapter must release only action.session.
++            return Issue(ActionKind::ReleaseOwned, frame);
++        }
++        if (!running || !contextReady || !frame.contracts.Complete()) { RestingPhase(); return std::nullopt; }
++        if (owned && (phase == Phase::Hosting || phase == Phase::AwaitingPeer)) return std::nullopt;
++        if (!frame.noForeignSession || !frame.sidecarReady) return std::nullopt;
++        const auto &selection = owned ? owned : pending;
++        if (!selection) { RestingPhase(); return std::nullopt; }
++        const bool ready = frame.targetVerified && frame.playable && frame.target == selection->session.target
++            && (!preparedAfter || frame.generation > preparedAfter);
++        if (selection->role == Role::Host && !ready) return std::nullopt;
++        if (selection->role == Role::Guest && !ready && !frame.safeToPrepare) return std::nullopt;
++        if (selection->role == Role::Guest && preparedAfter && !ready) return std::nullopt;
++        if (!CurrentContext() || !Valid(*selection, now)) { Retire(); return std::nullopt; }
++        if (!owned) { owned = pending; pending.reset(); }
++        // Latch possible ownership before the caller performs an engine action.
++        if (owned->role == Role::Host) return Issue(ActionKind::StartHost, frame);
++        return Issue(ready ? ActionKind::ConnectGuest : ActionKind::PrepareTarget, frame);
++    }
++    bool Controller::Complete(const EngineAction &action, bool success) {
++        if (!context.OnOwner()) return false;
++        Operation operation(inOperation);
++        if (!operation || !outstanding || *outstanding != action) return false;
++        outstanding.reset();
++        if (action.kind == ActionKind::ReleaseOwned) {
++            if (!success) { cleanupBlocked = true; phase = Phase::CleanupBlocked; return true; }
++            owned.reset(); retiring = cleanupBlocked = false; preparedAfter = ownedGeneration = ownership = 0;
++            RestingPhase(); return true;
++        }
++        if (!success) retiring = true;
++        if (retiring || !running) { retiring = true; phase = Phase::Deferred; return true; }
++        if (action.kind == ActionKind::PrepareTarget) { preparedAfter = action.engineGeneration; phase = Phase::Deferred; }
++        if (action.kind == ActionKind::StartHost) phase = Phase::Hosting;
++        if (action.kind == ActionKind::ConnectGuest) phase = Phase::AwaitingPeer;
++        return true;
++    }
++    bool Controller::Send(std::uint64_t friendId, const WorldFrame &frame, std::uint64_t now) {
++        if (!context.OnOwner()) return false;
++        Operation operation(inOperation);
++        if (!operation || !running || !Time(now) || !Fresh(frame)) return false;
++        const bool contextReady = CurrentContext();
++        ObserveRevocation(frame, contextReady);
++        if (!contextReady || !frame.contracts.Complete() || retiring || outstanding || !owned || owned->role != Role::Host || phase != Phase::Hosting
++            || !frame.noForeignSession || !frame.targetVerified || !frame.playable || !frame.sidecarReady || frame.target != owned->session.target
++            || frame.generation != ownedGeneration || !Valid(*owned, now)) return false;
++        return channel.Send(friendId, owned->session, frame.contracts, now);
++    }
++    bool Controller::RenewHost(std::uint64_t expires, std::uint64_t now) {
++        if (!context.OnOwner()) return false;
++        Operation operation(inOperation);
++        if (!operation || !running || !Time(now) || !owned || owned->role != Role::Host
++            || phase != Phase::Hosting || retiring || outstanding || expires <= owned->session.expires) return false;
++        if (!CurrentContext()) { Retire(); return false; }
++        auto renewed = owned->session; renewed.expires = expires;
++        if (!Valid({Role::Host, renewed}, now)) return false;
++        owned->session = renewed; return true;
++    }
++    bool Controller::Cancel() {
++        if (!context.OnOwner()) return false;
++        Operation operation(inOperation);
++        if (!operation) return false;
++        Retire(); return true;
++    }
++    bool Controller::RetryCleanup() {
++        if (!context.OnOwner()) return false;
++        Operation operation(inOperation);
++        if (!operation || !owned || !retiring || !cleanupBlocked || outstanding) return false;
++        cleanupBlocked = false; return true;
++    }
++    bool Controller::Stop() {
++        if (!context.OnOwner()) return false;
++        Operation operation(inOperation);
++        if (!operation) return false;
++        running = false; Retire();
++        callbacksStopped = channel.Stop();
++        if (!owned && !outstanding) RestingPhase();
++        return callbacksStopped && !owned && !outstanding;
++    }
++    std::optional<ControllerStatus> Controller::Status() const {
++        if (!context.OnOwner() || inOperation) return std::nullopt;
++        return ControllerStatus{phase, owned ? owned->role : Role::None, running, owned.has_value(), outstanding.has_value(), clockInvalid, run,
++            owned ? std::optional(owned->session) : std::nullopt, pending ? std::optional(pending->session) : std::nullopt};
++    }
++}

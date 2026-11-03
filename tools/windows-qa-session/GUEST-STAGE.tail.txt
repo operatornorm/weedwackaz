@@ -1,0 +1,70 @@
+    # The generated script prepends the reviewed same-session guest cutoff code.
+    $mgsvStageRequestPath = "$mgsvInput\stage-request.json"
+    if ((Get-Item -LiteralPath $mgsvStageRequestPath).Length -gt 2048) { throw 'Oversized staging request.' }
+    $mgsvStage = Get-Content -LiteralPath $mgsvStageRequestPath -Raw | ConvertFrom-Json
+    $mgsvStageTag = (Get-FileHash -LiteralPath "$mgsvInput\GUEST-STAGE.txt" -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($mgsvStage.schema -ne 1 -or $mgsvStage.stage -ne 'game-stage-v1' -or $mgsvStage.run -ne $mgsvRequest.run -or $mgsvStage.session -ne $mgsvRequest.session -or $mgsvStage.challenge -notmatch '^[0-9a-f]{32}$' -or $mgsvStage.source_tag -ne $mgsvStageTag) { throw 'Wrong staging request or source.' }
+    $mgsvGame = 'C:\MGSVQA\Game'
+    if (Test-Path -LiteralPath $mgsvGame) { throw 'Guest Game folder already exists; refusing to reuse it.' }
+    foreach ($mgsvName in @('stage-ready.gate', 'game-stage-result.json')) { if (Test-Path -LiteralPath (Join-Path $mgsvOutput $mgsvName)) { throw 'Staging output already exists.' } }
+    function Write-MgsvStageText($mgsvFinal, $mgsvText) {
+        $mgsvBytes = [Text.Encoding]::UTF8.GetBytes($mgsvText)
+        $mgsvFile = [IO.File]::Open(($mgsvFinal + '.tmp'), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $mgsvFile.Write($mgsvBytes, 0, $mgsvBytes.Length); $mgsvFile.Flush() } finally { $mgsvFile.Dispose() }
+        [IO.File]::Move(($mgsvFinal + '.tmp'), $mgsvFinal)
+    }
+    $mgsvReady = "WWQA3`n$($mgsvStage.run)`n$($mgsvStage.session)`n$($mgsvStage.challenge)`nprestage`n$mgsvStageTag`n1,1,1,1`n"
+    Write-MgsvStageText "$mgsvOutput\stage-ready.gate" $mgsvReady
+    Write-Output 'Fresh guest cutoff recorded. Waiting for the HOST window to finish copying; leave both windows open.'
+    $mgsvClock = [Diagnostics.Stopwatch]::StartNew()
+    while (-not (Test-Path -LiteralPath "$mgsvInput\game-stage-manifest.json")) {
+        if ($mgsvClock.Elapsed.TotalMinutes -gt 60) { throw 'Timed out waiting for host copy. No game was launched.' }
+        Start-Sleep -Seconds 2
+    }
+    Test-MgsvFirewall
+    Test-MgsvSteamClosed
+    if (@(NetAdapter\Get-NetAdapter -IncludeHidden | Where-Object { $_.Status.ToString() -eq 'Up' }).Count -ne 0) { throw 'Guest adapter is up again; do not proceed.' }
+    $mgsvManifestPath = "$mgsvInput\game-stage-manifest.json"
+    if ((Get-Item -LiteralPath $mgsvManifestPath).Length -gt 8192) { throw 'Oversized game manifest.' }
+    $mgsvManifest = Get-Content -LiteralPath $mgsvManifestPath -Raw | ConvertFrom-Json
+    foreach ($mgsvKey in @('schema', 'stage', 'run', 'session', 'challenge', 'source_tag')) { if ($mgsvManifest.$mgsvKey -cne $mgsvStage.$mgsvKey) { throw 'Wrong game manifest.' } }
+    $mgsvPaths = @('mgsvtpp.exe', 'steam_api64.dll', 'master/0/00.dat', 'master/0/01.dat', 'master/chunk0.dat', 'master/chunk1.dat', 'master/chunk2.dat', 'master/chunk3.dat', 'master/chunk4.dat', 'master/data1.dat')
+    if (@($mgsvManifest.files).Count -ne 10) { throw 'Wrong game file count.' }
+    $mgsvSeen = @{}
+    $mgsvTotal = [long]0
+    foreach ($mgsvEntry in $mgsvManifest.files) {
+        if ($mgsvEntry.path -cnotin $mgsvPaths -or $mgsvSeen.ContainsKey($mgsvEntry.path) -or $mgsvEntry.sha256 -cnotmatch '^[0-9a-f]{64}$' -or $mgsvEntry.bytes -le 0 -or $mgsvEntry.bytes -gt 8GB) { throw 'Invalid game file entry.' }
+        $mgsvSeen[$mgsvEntry.path] = $true
+        $mgsvTotal += $mgsvEntry.bytes
+    }
+    if ([IO.DriveInfo]::new('C:\').AvailableFreeSpace -lt ($mgsvTotal + 2GB)) { throw 'Not enough free disk space inside Sandbox.' }
+    [IO.Directory]::CreateDirectory($mgsvGame) | Out-Null
+    $mgsvFiles = @()
+    $mgsvIndex = 0
+    foreach ($mgsvEntry in $mgsvManifest.files) {
+        $mgsvIndex++
+        Write-Output ('Copying guest file {0}/10: {1}' -f $mgsvIndex, $mgsvEntry.path)
+        $mgsvSource = Join-Path "$mgsvInput\Game" $mgsvEntry.path
+        $mgsvDestination = Join-Path $mgsvGame $mgsvEntry.path
+        if ((Get-Item -LiteralPath $mgsvSource).Length -ne $mgsvEntry.bytes) { throw 'Wrong source file size.' }
+        [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($mgsvDestination)) | Out-Null
+        $mgsvRead = [IO.File]::Open($mgsvSource, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        try {
+            $mgsvWrite = [IO.File]::Open($mgsvDestination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try { $mgsvRead.CopyTo($mgsvWrite); $mgsvWrite.Flush() } finally { $mgsvWrite.Dispose() }
+        } finally { $mgsvRead.Dispose() }
+        $mgsvHash = (Get-FileHash -LiteralPath $mgsvDestination -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($mgsvHash -ne $mgsvEntry.sha256 -or (Get-Item -LiteralPath $mgsvDestination).Length -ne $mgsvEntry.bytes) { throw 'Guest copy verification failed.' }
+        if ($mgsvEntry.path -eq 'mgsvtpp.exe' -and $mgsvHash -ne 'f3818d172293800171a344a71957bc7257f591bbf7c1792e10fef6bfbba7f4f2') { throw 'Wrong guest game executable.' }
+        if ($mgsvEntry.path -eq 'steam_api64.dll' -and $mgsvHash -ne '08bd0152356e5619ee56a6714ac951b6800dbb21821693a4efaf85278442c60a') { throw 'Wrong guest Steam DLL.' }
+        if ($mgsvEntry.path -eq 'master/0/00.dat' -and (Get-FileHash -LiteralPath $mgsvDestination -Algorithm MD5).Hash.ToLowerInvariant() -ne '2779dcc79b7b700ed70b3900344cc164') { throw 'Wrong guest stock 00.dat.' }
+        $mgsvFiles += [ordered]@{path=$mgsvEntry.path;bytes=$mgsvEntry.bytes;sha256=$mgsvHash}
+    }
+    Test-MgsvFirewall
+    Test-MgsvSteamClosed
+    if (@(NetAdapter\Get-NetAdapter -IncludeHidden | Where-Object { $_.Status.ToString() -eq 'Up' }).Count -ne 0) { throw 'Guest adapter is up again.' }
+    $mgsvResult = [ordered]@{schema=1;stage='game-stage-v1';run=$mgsvStage.run;session=$mgsvStage.session;challenge=$mgsvStage.challenge;source_tag=$mgsvStageTag;result='files_copied_not_launched';files=$mgsvFiles}
+    Write-MgsvStageText "$mgsvOutput\game-stage-result.json" ($mgsvResult | ConvertTo-Json -Depth 4)
+    Write-Output 'Guest game copy verified. NO GAME WAS LAUNCHED. Keep Sandbox open and offline.'
+    Write-Output 'Return only game-stage-result.json and game-stage-manifest.json to the chat.'
+}

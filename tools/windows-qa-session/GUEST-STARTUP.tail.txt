@@ -1,0 +1,106 @@
+    # Prepend the reviewed guest cutoff block; its old report section is omitted.
+    $mgsvStartupPath = "$mgsvInput\startup-request.json"
+    if ((Get-Item -LiteralPath $mgsvStartupPath).Length -gt 2048) { throw 'Oversized startup request.' }
+    $mgsvStartup = Get-Content -LiteralPath $mgsvStartupPath -Raw | ConvertFrom-Json
+    $mgsvStartupTag = (Get-FileHash -LiteralPath "$mgsvInput\GUEST-STARTUP.txt" -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($mgsvStartup.schema -ne 1 -or $mgsvStartup.stage -ne 'startup-v1' -or $mgsvStartup.run -ne $mgsvRequest.run -or $mgsvStartup.session -ne $mgsvRequest.session -or $mgsvStartup.challenge -cnotmatch '^[0-9a-f]{32}$' -or $mgsvStartup.source_tag -ne $mgsvStartupTag) { throw 'Wrong startup session or source.' }
+    if ((Get-FileHash -LiteralPath "$mgsvInput\game-stage-manifest.json" -Algorithm SHA256).Hash.ToLowerInvariant() -ne $mgsvStartup.manifest_sha256 -or (Get-FileHash -LiteralPath "$mgsvOutput\game-stage-result.json" -Algorithm SHA256).Hash.ToLowerInvariant() -ne $mgsvStartup.result_sha256) { throw 'Staging evidence changed.' }
+    $mgsvManifest = Get-Content -LiteralPath "$mgsvInput\game-stage-manifest.json" -Raw | ConvertFrom-Json
+    if ($mgsvManifest.run -ne $mgsvStartup.run -or $mgsvManifest.session -ne $mgsvStartup.session) { throw 'Wrong copied game session.' }
+    $mgsvGame = 'C:\MGSVQA\Game'
+    $mgsvAllowedDirs = @($mgsvGame, "$mgsvGame\master", "$mgsvGame\master\0")
+    $mgsvAllowedFiles = @('mgsvtpp.exe', 'steam_api64.dll', 'master/0/00.dat', 'master/0/01.dat', 'master/chunk0.dat', 'master/chunk1.dat', 'master/chunk2.dat', 'master/chunk3.dat', 'master/chunk4.dat', 'master/data1.dat')
+    $mgsvFilesSeen = @{}
+    foreach ($mgsvDirectory in $mgsvAllowedDirs) {
+        $mgsvItem = Get-Item -LiteralPath $mgsvDirectory -Force
+        if (-not $mgsvItem.PSIsContainer -or ($mgsvItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Redirected game directory.' }
+        foreach ($mgsvItem in @(Get-ChildItem -LiteralPath $mgsvDirectory -Force)) {
+            if ($mgsvItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Redirected game entry.' }
+            if ($mgsvItem.PSIsContainer) {
+                if ($mgsvItem.FullName -notin $mgsvAllowedDirs) { throw 'Unexpected game subdirectory.' }
+            } else {
+                $mgsvRelative = $mgsvItem.FullName.Substring($mgsvGame.Length + 1).Replace('\', '/')
+                if ($mgsvRelative -cnotin $mgsvAllowedFiles -or $mgsvFilesSeen.ContainsKey($mgsvRelative)) { throw 'Unexpected game file.' }
+                $mgsvEntry = @($mgsvManifest.files | Where-Object { $_.path -ceq $mgsvRelative })
+                if ($mgsvEntry.Count -ne 1 -or $mgsvItem.Length -ne $mgsvEntry[0].bytes) { throw 'Game size changed.' }
+                $mgsvFilesSeen[$mgsvRelative] = $true
+            }
+        }
+    }
+    if ($mgsvFilesSeen.Count -ne 10) { throw 'Game files missing.' }
+    if ((Get-FileHash -LiteralPath "$mgsvGame\mgsvtpp.exe" -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'f3818d172293800171a344a71957bc7257f591bbf7c1792e10fef6bfbba7f4f2' -or (Get-FileHash -LiteralPath "$mgsvGame\steam_api64.dll" -Algorithm SHA256).Hash.ToLowerInvariant() -ne '08bd0152356e5619ee56a6714ac951b6800dbb21821693a4efaf85278442c60a' -or (Get-FileHash -LiteralPath "$mgsvGame\master\0\00.dat" -Algorithm MD5).Hash.ToLowerInvariant() -ne '2779dcc79b7b700ed70b3900344cc164') { throw 'Baseline identity changed.' }
+    if (@(Microsoft.PowerShell.Management\Get-Process | Where-Object { $_.ProcessName -eq 'mgsvtpp' }).Count -ne 0) { throw 'A game process already exists; leave it alone.' }
+    $mgsvReportPath = "$mgsvOutput\startup-result.json"
+    if ((Test-Path -LiteralPath $mgsvReportPath) -or (Test-Path -LiteralPath ($mgsvReportPath + '.tmp'))) { throw 'Startup output already exists; do not repeat.' }
+    $mgsvResult = [ordered]@{schema=1;stage='startup-v1';run=$mgsvStartup.run;session=$mgsvStartup.session;challenge=$mgsvStartup.challenge;source_tag=$mgsvStartupTag;result='owner_aborted';process_started=$false;observed_seconds=0;exit_code_hex=$null;native_error=$null;close_method='not_needed';gameplay_verified=$false;offline_license_verified=$false;save_isolation_verified=$false;co_op_verified=$false}
+    $mgsvProcess = $null
+    $mgsvClock = $null
+    try {
+        # Start the already installed guest Steam normally; no updates/downloads,
+        # login automation, appmanifest creation or network reenablement is used.
+        $mgsvSteamExe = 'C:\Program Files (x86)\Steam\steam.exe'
+        Microsoft.PowerShell.Management\Start-Process -FilePath $mgsvSteamExe -WorkingDirectory ([IO.Path]::GetDirectoryName($mgsvSteamExe))
+        Write-Output 'INSIDE this guest Steam: wait for Library in Offline Mode. Do not enable networking.'
+        Write-Output 'If Steam needs a new login/activation/update, do not proceed; type STOP below.'
+        $mgsvAnswer = Read-Host 'Type READY when guest Steam Library is visible offline, or STOP to abort'
+        if ($mgsvAnswer -cne 'READY') { return }
+        Test-MgsvFirewall
+        if (@(NetAdapter\Get-NetAdapter -IncludeHidden | Where-Object { $_.Status.ToString() -eq 'Up' }).Count -ne 0) { throw 'Guest adapter is up.' }
+        $mgsvSteam = @(Microsoft.PowerShell.Management\Get-Process | Where-Object { $_.ProcessName -eq 'steam' })
+        if ($mgsvSteam.Count -ne 1 -or $mgsvSteam[0].MainModule.FileName -ine $mgsvSteamExe) { throw 'Expected guest Steam process is unavailable.' }
+        $mgsvStart = [Diagnostics.ProcessStartInfo]::new()
+        $mgsvStart.FileName = "$mgsvGame\mgsvtpp.exe"
+        $mgsvStart.WorkingDirectory = $mgsvGame
+        $mgsvStart.UseShellExecute = $false
+        # Correct owned App ID, confined to this child process environment.
+        # This does not supply entitlement or bypass an activation requirement.
+        $mgsvStart.EnvironmentVariables['SteamAppId'] = '287700'
+        $mgsvStart.EnvironmentVariables['SteamGameId'] = '287700'
+        $mgsvProcess = [Diagnostics.Process]::Start($mgsvStart)
+        $mgsvResult.process_started = $true
+        $mgsvClock = [Diagnostics.Stopwatch]::StartNew()
+        Write-Output 'Startup probe running for up to 120 seconds. No play or mission selection is needed.'
+        Write-Output 'If a missing-component or activation message appears, note its wording. Do not install or reconnect.'
+        while (-not $mgsvProcess.WaitForExit(1000) -and $mgsvClock.Elapsed.TotalSeconds -lt 120) { }
+        $mgsvResult.observed_seconds = [int][Math]::Min(130, [Math]::Floor($mgsvClock.Elapsed.TotalSeconds))
+        if ($mgsvProcess.HasExited) { $mgsvResult.result = 'exited_before_deadline' }
+        else {
+            $mgsvResult.result = 'process_survived_deadline'
+            $mgsvResult.close_method = 'graceful'
+            [void]$mgsvProcess.CloseMainWindow()
+            if (-not $mgsvProcess.WaitForExit(10000)) {
+                $mgsvResult.close_method = 'forced'
+                $mgsvProcess.Kill()
+                if (-not $mgsvProcess.WaitForExit(10000)) { throw 'Owned test process did not exit.' }
+            }
+        }
+        $mgsvResult.exit_code_hex = '{0:X8}' -f ([long]$mgsvProcess.ExitCode -band 4294967295)
+        Test-MgsvFirewall
+        if (@(NetAdapter\Get-NetAdapter -IncludeHidden | Where-Object { $_.Status.ToString() -eq 'Up' }).Count -ne 0) { throw 'Guest adapter changed.' }
+    } catch {
+        $mgsvResult.result = 'probe_error'
+        $mgsvException = $_.Exception.GetBaseException()
+        $mgsvResult.native_error = $mgsvException.HResult
+        if ($mgsvException -is [ComponentModel.Win32Exception]) { $mgsvResult.native_error = $mgsvException.NativeErrorCode }
+        Write-Output ('Startup probe stopped with error code: ' + $mgsvResult.native_error)
+    } finally {
+        if ($mgsvProcess) {
+            try {
+                if (-not $mgsvProcess.HasExited) {
+                    # Retain the Process object/handle from our own Start call;
+                    # never enumerate or terminate arbitrary game/Steam PIDs.
+                    $mgsvProcess.Kill()
+                    if (-not $mgsvProcess.WaitForExit(10000)) { throw 'Owned process cleanup failed.' }
+                    $mgsvResult.close_method = 'forced'
+                }
+            } catch { $mgsvResult.result = 'cleanup_failed'; $mgsvResult.close_method = 'failed' }
+            $mgsvProcess.Dispose()
+        }
+        $mgsvBytes = [Text.Encoding]::UTF8.GetBytes(($mgsvResult | ConvertTo-Json))
+        $mgsvFile = [IO.File]::Open(($mgsvReportPath + '.tmp'), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $mgsvFile.Write($mgsvBytes, 0, $mgsvBytes.Length); $mgsvFile.Flush() } finally { $mgsvFile.Dispose() }
+        [IO.File]::Move(($mgsvReportPath + '.tmp'), $mgsvReportPath)
+        Write-Output 'Startup observation saved. Exit guest Steam normally; keep this Sandbox open and offline.'
+        Write-Output 'Return only startup-result.json and startup-request.json, plus any on-screen game error wording.'
+    }
+}

@@ -1,0 +1,181 @@
+diff --git a/hook/CMakeLists.txt b/hook/CMakeLists.txt
+index 446ad2a..97cd979 100644
+--- a/hook/CMakeLists.txt
++++ b/hook/CMakeLists.txt
+@@ -8,6 +8,12 @@ set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -s")
+ set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -s")
+ set(CMAKE_SHARED_LIBRARY_PREFIX "")
+ 
++# Some MinGW distributions target a CRT without this optional diagnostic API.
++# Check by linking, so headers alone cannot advertise an unavailable import.
++include(CheckCXXSourceCompiles)
++check_cxx_source_compiles("#include <cstdlib>\nint main() { _set_abort_behavior(1, _WRITE_ABORT_MSG); }"
++        DYNAMITE_HAVE_SET_ABORT_BEHAVIOR)
++
+ include(FetchContent)
+ FetchContent_Declare(
+         minhook
+@@ -89,6 +95,10 @@ add_library(${PROJECT_NAME} SHARED
+ 
+ add_dependencies(${PROJECT_NAME} version)
+ 
++if(DYNAMITE_HAVE_SET_ABORT_BEHAVIOR)
++    target_compile_definitions(${PROJECT_NAME} PRIVATE DYNAMITE_HAVE_SET_ABORT_BEHAVIOR=1)
++endif()
++
+ target_compile_options(${PROJECT_NAME} PUBLIC -fpermissive)
+ target_link_options(${PROJECT_NAME} PUBLIC -static)
+-target_link_libraries(${PROJECT_NAME} flatbuffers minhook mINI spdlog::spdlog_header_only)
+\ No newline at end of file
++target_link_libraries(${PROJECT_NAME} flatbuffers minhook mINI spdlog::spdlog_header_only)
+diff --git a/hook/src/DynamiteSyncImpl/DynamiteSyncImpl.cpp b/hook/src/DynamiteSyncImpl/DynamiteSyncImpl.cpp
+index 037c664..261e5ae 100644
+--- a/hook/src/DynamiteSyncImpl/DynamiteSyncImpl.cpp
++++ b/hook/src/DynamiteSyncImpl/DynamiteSyncImpl.cpp
+@@ -1157,7 +1157,7 @@ namespace Dynamite {
+ 
+         auto buf = builder->GetBufferPointer();
+         auto size = builder->GetSize();
+-        if (size == 0 || size > (sizeof(this->updateBuffer) + sizeof(DYNAMITE_RAW_HEADER))) {
++        if (!Wire::CanSendPayload(size)) {
+             spdlog::info("{}, invalid size {}", __PRETTY_FUNCTION__, size);
+             return false;
+         }
+@@ -1204,21 +1204,21 @@ namespace Dynamite {
+     }
+ 
+     bool DynamiteSyncImpl::RecvRaw(void *buffer, int32_t size) {
++        const auto buflen = Wire::PayloadSize(size);
++        if (buffer == nullptr || !buflen) {
++            spdlog::error("{}, invalid incoming packet size ({})", __PRETTY_FUNCTION__, size);
++            return false;
++        }
++
+         if (g_hook->cfg.debug.dynamiteMsg) {
+             auto bytes = bytes_to_hex(buffer, size);
+             spdlog::info("{}, size={}, dump={}", __PRETTY_FUNCTION__, size, bytes);
+         }
+ 
+-        if ((size - sizeof(DYNAMITE_RAW_HEADER)) > sizeof(this->updateBuffer)) {
+-            spdlog::error("{}, incoming packet is too big ({})", __PRETTY_FUNCTION__, size);
+-            return false;
+-        }
+-
+-        auto buflen = size - sizeof(DYNAMITE_RAW_HEADER);
+         memset(this->updateBuffer, 0, sizeof(this->updateBuffer));
+-        memcpy(this->updateBuffer, (char *)buffer + sizeof(DYNAMITE_RAW_HEADER), buflen);
++        memcpy(this->updateBuffer, (char *)buffer + sizeof(DYNAMITE_RAW_HEADER), *buflen);
+ 
+-        auto verifier = flatbuffers::Verifier((uint8_t *)this->updateBuffer, sizeof(this->updateBuffer));
++        auto verifier = flatbuffers::Verifier((uint8_t *)this->updateBuffer, *buflen);
+         auto ok = DynamiteMessage::VerifyMessageWrapperBuffer(verifier);
+         if (!ok) {
+             spdlog::error("{}, message wrapper verification failed", __PRETTY_FUNCTION__);
+@@ -1280,4 +1280,4 @@ namespace Dynamite {
+ 
+         return true;
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/hook/src/DynamiteSyncImpl/DynamiteSyncImpl.h b/hook/src/DynamiteSyncImpl/DynamiteSyncImpl.h
+index 937eb07..b6b0b3c 100644
+--- a/hook/src/DynamiteSyncImpl/DynamiteSyncImpl.h
++++ b/hook/src/DynamiteSyncImpl/DynamiteSyncImpl.h
+@@ -3,6 +3,7 @@
+ 
+ #include "BossQuietNextActionTaskActionCondition.h"
+ #include "DynamiteSyncSchema_generated.h"
++#include "WireBounds.h"
+ #include "Tpp/BossQuietActionCommand.h"
+ #include "Tpp/BossQuietActionControllerImplWork.h"
+ #include "Tpp/BossQuietActionTask.h"
+@@ -13,6 +14,7 @@
+ #include <thread>
+ 
+ const char DYNAMITE_RAW_HEADER[8] = {68, 89, 78, 65, 77, 73, 84, 69}; // DYNAMITE
++static_assert(sizeof(DYNAMITE_RAW_HEADER) == Dynamite::Wire::HeaderSize);
+ 
+ namespace Dynamite {
+     class DynamiteSyncImpl {
+@@ -89,7 +91,7 @@ namespace Dynamite {
+         void *steamUDPSocketInfo = nullptr;
+         void *steamUDPSocket = nullptr;
+ 
+-        char updateBuffer[1024];
++        char updateBuffer[Wire::MaxPayloadSize];
+         uint32_t packetNumber = 0;
+         uint32_t packetSeen = 0;
+         std::jthread syncThread;
+diff --git a/hook/src/DynamiteSyncImpl/WireBounds.h b/hook/src/DynamiteSyncImpl/WireBounds.h
+new file mode 100644
+index 0000000..6bf90ea
+--- /dev/null
++++ b/hook/src/DynamiteSyncImpl/WireBounds.h
+@@ -0,0 +1,26 @@
++#ifndef DYNAMITE_WIRE_BOUNDS_H
++#define DYNAMITE_WIRE_BOUNDS_H
++
++#include <cstddef>
++#include <cstdint>
++#include <optional>
++
++namespace Dynamite::Wire {
++    inline constexpr std::size_t HeaderSize = 8;
++    inline constexpr std::size_t MaxPayloadSize = 1024;
++
++    constexpr bool CanSendPayload(std::size_t size) noexcept {
++        return size > 0 && size <= MaxPayloadSize;
++    }
++
++    constexpr std::optional<std::size_t> PayloadSize(std::int32_t packetSize) noexcept {
++        // Validate signed input before subtracting or converting to size_t.
++        if (packetSize <= static_cast<std::int32_t>(HeaderSize) ||
++            packetSize > static_cast<std::int32_t>(HeaderSize + MaxPayloadSize)) {
++            return std::nullopt;
++        }
++        return static_cast<std::size_t>(packetSize) - HeaderSize;
++    }
++}
++
++#endif
+diff --git a/hook/src/dynamite.cpp b/hook/src/dynamite.cpp
+index 9923d9e..e85f588 100644
+--- a/hook/src/dynamite.cpp
++++ b/hook/src/dynamite.cpp
+@@ -82,7 +82,9 @@ namespace Dynamite {
+     Dynamite::Dynamite() : thisModule{GetModuleHandle(nullptr)} {
+         signal(SIGABRT, &AbortHandler);
+         terminate_Original = std::set_terminate(TerminateHandler);
++#if defined(DYNAMITE_HAVE_SET_ABORT_BEHAVIOR)
+         _set_abort_behavior(1, _WRITE_ABORT_MSG);
++#endif
+         SetUnhandledExceptionFilter(UnhandledExceptionHandler);
+ 
+         SetupLogger();
+@@ -114,4 +116,4 @@ namespace Dynamite {
+     }
+ 
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/moddata/standalone/TppMain.lua b/moddata/standalone/TppMain.lua
+index 7f1b927..16ad465 100755
+--- a/moddata/standalone/TppMain.lua
++++ b/moddata/standalone/TppMain.lua
+@@ -930,10 +930,10 @@ function e.OnMessage(n, e, i, a, p, t, o)
+ 		n.animalBlockScript.OnMessage(e, i, a, p, t, o, s)
+ 	end
+ end
+-function e.OnTerminate(e)
+-	if e.sequence then
+-		if t(e.sequence.OnTerminate) then
+-			e.sequence.OnTerminate()
++function e.OnTerminate(subScripts)
++	if subScripts.sequence then
++		if t(subScripts.sequence.OnTerminate) then
++			subScripts.sequence.OnTerminate()
+ 		end
+ 	end
+ 

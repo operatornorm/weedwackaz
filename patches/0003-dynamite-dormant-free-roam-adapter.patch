@@ -1,0 +1,637 @@
+diff --git a/moddata/moddata.go b/moddata/moddata.go
+--- a/moddata/moddata.go
++++ b/moddata/moddata.go
+@@ -1111,6 +1111,14 @@
+ 
+ var ReplaceInQAR = []AddToQar{
+ 	{
++		SourceFile: "standalone/WWFreeRoamManifest.lua",
++		FileName:   "/Assets/tpp/script/lib/WWFreeRoamManifest.lua",
++	},
++	{
++		SourceFile: "standalone/WWFreeRoam.lua",
++		FileName:   "/Assets/tpp/script/lib/WWFreeRoam.lua",
++	},
++	{
+ 		// 00.dat
+ 		// add script_loader
+ 		SourceFile: "standalone/Tpp.lua",
+diff --git a/moddata/free_roam_test.go b/moddata/free_roam_test.go
+new file mode 100644
+--- /dev/null
++++ b/moddata/free_roam_test.go
+@@ -0,0 +1,38 @@
++package moddata
++
++import (
++	"strings"
++	"testing"
++)
++
++func TestFreeRoamAdapterModulesAreEmbeddedAndMappedOnce(t *testing.T) {
++	for _, name := range []string{"WWFreeRoamManifest", "WWFreeRoam"} {
++		source := "standalone/" + name + ".lua"
++		if _, err := ModData.ReadFile(source); err != nil {
++			t.Fatal("adapter module missing from embedded files", name, err)
++		}
++		count := 0
++		for _, replacement := range ReplaceInQAR {
++			if replacement.FileName == "/Assets/tpp/script/lib/"+name+".lua" {
++				if replacement.SourceFile != source {
++					t.Fatal("adapter module has wrong source mapping", name)
++				}
++				count++
++			}
++		}
++		if count != 1 {
++			t.Fatal("adapter module mapping must be unique", name, count)
++		}
++	}
++	data, err := ModData.ReadFile("standalone/Tpp.lua")
++	if err != nil {
++		t.Fatal(err)
++	}
++	text := string(data)
++	manifest := strings.Index(text, "/Assets/tpp/script/lib/WWFreeRoamManifest.lua")
++	adapter := strings.Index(text, "/Assets/tpp/script/lib/WWFreeRoam.lua")
++	main := strings.Index(text, "/Assets/tpp/script/lib/TppMain.lua")
++	if manifest < 0 || adapter <= manifest || main <= adapter {
++		t.Fatal("adapter dependencies must precede TppMain in declared load order")
++	}
++}
+diff --git a/moddata/standalone/Tpp.lua b/moddata/standalone/Tpp.lua
+--- a/moddata/standalone/Tpp.lua
++++ b/moddata/standalone/Tpp.lua
+@@ -54,6 +54,8 @@
+ 	"/Assets/tpp/script/lib/TppGeneInter.lua",
+ 	"/Assets/tpp/script/lib/TppInterrogation.lua",
+ 	"/Assets/tpp/script/lib/TppGimmick.lua",
++	"/Assets/tpp/script/lib/WWFreeRoamManifest.lua",
++	"/Assets/tpp/script/lib/WWFreeRoam.lua",
+ 	"/Assets/tpp/script/lib/TppMain.lua",
+ 	"/Assets/tpp/script/lib/TppDemoBlock.lua",
+ 	"/Assets/tpp/script/lib/TppAnimalBlock.lua",
+diff --git a/moddata/standalone/TppMain.lua b/moddata/standalone/TppMain.lua
+--- a/moddata/standalone/TppMain.lua
++++ b/moddata/standalone/TppMain.lua
+@@ -1,4 +1,8 @@
+ local e = {}
++local function freeRoamAdapter()
++	local adapter = rawget(_G, "WWFreeRoam")
++	if type(adapter) == "table" and adapter.schema == 1 then return adapter end
++end
+ local s = Tpp.ApendArray
+ local n = Tpp.DEBUG_StrCode32ToString
+ local t = Tpp.IsTypeFunc
+@@ -97,6 +101,11 @@
+ end
+ 
+ function e.IsCoop(missionCode)
++	if missionCode == 30010 or missionCode == 30020 then
++		local free = freeRoamAdapter()
++		return free ~= nil and type(free.IsCoopLoad) == "function" and
++			free.IsCoopLoad(missionCode, vars and vars.locationCode)
++	end
+ 	local coops = {
+ 		10020, -- 1
+ 		10036, -- 3
+@@ -146,6 +155,10 @@
+ end
+ 
+ function e.OnAllocate(n)
++	local free = freeRoamAdapter()
++	if free and type(free.FreezeAllocation) == "function" then
++		free.FreezeAllocation(vars.missionCode, vars.locationCode)
++	end
+ 	-- If you are loading a mission from a checkpoint with already placed marker, game will attempt to restore
+ 	-- that marker through tpp::ui::menu::UiDepend::ActUserMarkerSaveLoad function (not lua).
+ 	-- Combined with co-op hacks, marker restoration will result in a hang.
+@@ -557,6 +570,8 @@
+ 	end
+ 	TppDemo.UpdateNuclearAbolitionFlag()
+ 	TppQuest.AcquireKeyItemOnMissionStart()
++	local free = freeRoamAdapter()
++	if free and type(free.ObserveInitialized) == "function" then free.ObserveInitialized(vars.missionCode, vars.locationCode) end
+ end
+ function e.SetUpdateFunction(e)
+ 	a = {}
+@@ -638,6 +653,8 @@
+ 	if e.IsCoop(vars.missionCode) then
+ 		Dynamite.AcceptMarkerRequests()
+ 	end
++	local free = freeRoamAdapter()
++	if free and type(free.ObservePrepared) == "function" then free.ObservePrepared(vars.missionCode, vars.locationCode) end
+ end
+ function e.OnMissionGameStart(n)
+ 	TppClock.Start()
+@@ -645,7 +662,8 @@
+ 		PlayRecord.RegistPlayRecord("MISSION_START")
+ 	end
+ 	TppQuest.InitializeQuestActiveStatus()
+-	if mvars.seq_demoSequneceList[mvars.seq_missionStartSequence] then
++	local startedInDemo = mvars.seq_demoSequneceList[mvars.seq_missionStartSequence]
++	if startedInDemo then
+ 		e.EnableGameStatusForDemo()
+ 	else
+ 		e.EnableGameStatus()
+@@ -658,6 +676,10 @@
+ 		TppMission.EnableAlertOutOfMissionAreaIfAlertAreaStart()
+ 	end
+ 	TppSoundDaemon.ResetMute("Telop")
++	local free = freeRoamAdapter()
++	if free and type(free.ObserveGameStarted) == "function" then
++		free.ObserveGameStarted(vars.missionCode, vars.locationCode, not not startedInDemo)
++	end
+ end
+ function e.ClearStageBlockMessage()
+ 	StageBlock.ClearLargeBlockNameForMessage()
+@@ -821,6 +843,8 @@
+ 	end
+ end
+ function e.OnReload(n)
++	local free = freeRoamAdapter()
++	if free and type(free.SuspendForReload) == "function" then free.SuspendForReload() end
+ 	for i, e in pairs(n) do
+ 		if t(e.OnLoad) then
+ 			e.OnLoad()
+@@ -931,18 +955,44 @@
+ 	end
+ end
+ function e.OnTerminate(subScripts)
++	local free = freeRoamAdapter()
++	local termination = free and type(free.CaptureTermination) == "function" and free.CaptureTermination() or nil
++	local freeCleanup = termination and termination.needs_cleanup
++	local callbackError
++	local callbackFailed = false
+ 	if subScripts.sequence then
+ 		if t(subScripts.sequence.OnTerminate) then
+-			subScripts.sequence.OnTerminate()
+-		end
+-	end
+-
+-	if TppGameStatus.IsSet("Mission", "S_IS_ONLINE") and e.IsCoop(vars.missionCode) then
++			if freeCleanup then
++				if free.ClaimTerminationCallback(termination) then
++					local ok, failure = pcall(subScripts.sequence.OnTerminate)
++					if not ok then callbackError, callbackFailed = failure, true end
++				end
++			else
++				subScripts.sequence.OnTerminate()
++			end
++		end
++	end
++
++	local cleanupFailed = false
++	if freeCleanup then
++		local function attempt(fn)
++			local ok, result = pcall(fn)
++			if not ok or result == false then cleanupFailed = true end
++		end
++		attempt(function() return Dynamite.StopNearestEnemyThread() end)
++		attempt(function() return TppGameStatus.Reset("Mission", "S_IS_ONLINE") end)
++		attempt(function() return TppNetworkUtil.SessionDisconnectPreparingMembers() end)
++		attempt(function() return TppNetworkUtil.CloseSession() end)
++		attempt(function() return Dynamite.ResetClientSessionState() end)
++	elseif TppGameStatus.IsSet("Mission", "S_IS_ONLINE") and e.IsCoop(vars.missionCode) then
+ 		Dynamite.StopNearestEnemyThread()
+ 		TppGameStatus.Reset("Mission", "S_IS_ONLINE")
+ 		TppNetworkUtil.SessionDisconnectPreparingMembers()
+ 		TppNetworkUtil.CloseSession()
+ 		Dynamite.ResetClientSessionState()
+ 	end
++	if not cleanupFailed and termination and type(free.CompleteTermination) == "function" then free.CompleteTermination(termination) end
++	if callbackFailed then error(callbackError, 0) end
++	if cleanupFailed then error("WWFreeRoam teardown incomplete; cleanup must be retried", 0) end
+ end
+ return e
+diff --git a/moddata/standalone/TppMissionList.lua b/moddata/standalone/TppMissionList.lua
+--- a/moddata/standalone/TppMissionList.lua
++++ b/moddata/standalone/TppMissionList.lua
+@@ -1,4 +1,16 @@
+ local a = {}
++local function addFreeRoamPack(mission, location, branch, original)
++	local adapter = rawget(_G, "WWFreeRoam")
++	local path, token = original, nil
++	if type(adapter) == "table" and adapter.schema == 1 and type(adapter.BeginPackageLoad) == "function" then
++		path, token = adapter.BeginPackageLoad(mission, location, branch, original)
++	end
++	if type(path) ~= "string" then path, token = original, nil end
++	TppPackList.AddMissionPack(path)
++	if token and type(adapter) == "table" and type(adapter.AppendSupport) == "function" then
++		adapter.AppendSupport(token, TppPackList.AddMissionPack)
++	end
++end
+ local p = {}
+ p[TppDefine.LOCATION_ID.INIT] = { "/Assets/tpptest/pack/location/empty/empty.fpk" }
+ p[TppDefine.LOCATION_ID.AFGH] = { "/Assets/tpp/pack/location/afgh/afgh.fpk" }
+@@ -888,16 +900,16 @@
+ 	TppPackList.AddLocationCommonMissionAreaPack(p)
+ 	TppPackList.AddMissionPack(TppDefine.MISSION_COMMON_PACK.ORDER_BOX)
+ 	if TppPackList.IsMissionPackLabel("recoverVolginDemo") then
+-		TppPackList.AddMissionPack("/Assets/tpp/pack/mission2/free/f30010/f30011.fpk")
+-	else
+-		TppPackList.AddMissionPack("/Assets/tpp/pack/mission2/free/f30010/f30010.fpk")
++		addFreeRoamPack(30010, TppDefine.LOCATION_ID.AFGH, "recoverVolginDemo", "/Assets/tpp/pack/mission2/free/f30010/f30011.fpk")
++	else
++		addFreeRoamPack(30010, TppDefine.LOCATION_ID.AFGH, "normal", "/Assets/tpp/pack/mission2/free/f30010/f30010.fpk")
+ 	end
+ end
+ s[30020] = function(p)
+ 	TppPackList.AddLocationCommonScriptPack(p)
+ 	TppPackList.AddLocationCommonMissionAreaPack(p)
+ 	TppPackList.AddMissionPack(TppDefine.MISSION_COMMON_PACK.ORDER_BOX)
+-	TppPackList.AddMissionPack("/Assets/tpp/pack/mission2/free/f30020/f30020.fpk")
++	addFreeRoamPack(30020, TppDefine.LOCATION_ID.MAFR, "normal", "/Assets/tpp/pack/mission2/free/f30020/f30020.fpk")
+ end
+ s[30050] = function(p)
+ 	TppPackList.AddLocationCommonScriptPack(p)
+diff --git a/moddata/standalone/WWFreeRoam.lua b/moddata/standalone/WWFreeRoam.lua
+new file mode 100644
+--- /dev/null
++++ b/moddata/standalone/WWFreeRoam.lua
+@@ -0,0 +1,334 @@
++-- Experimental adapter. No verifier is registered by this build, so it stays off.
++-- Providers are trusted bootstrap interfaces, not proof inferred from Lua flags.
++local e = { schema = 1 }
++local requested, providers, busy, acting = false, nil, false, false
++local generation, nonce = 0, 0
++local pending, active, poisoned = nil, nil, nil
++local reason = "disabled"
++local requirements = {
++    "packages_verified", "companion_routing_verified", "dependencies_verified",
++    "profile_verified", "lifecycle_contract_verified", "save_isolation_verified", "protocol_epoch_verified",
++}
++
++local function plain(value) return type(value) == "table" and getmetatable(value) == nil end
++local function integer(value) return type(value) == "number" and value == math.floor(value) and value >= 0 and value <= 9007199254740991 end
++local function hex(value, length) return type(value) == "string" and #value == length and value:match("^[0-9a-f]+$") ~= nil end
++local function finite(value) return type(value) == "number" and value == value and math.abs(value) <= 1000000 end
++local function center(value)
++    return plain(value) and finite(value.x) and finite(value.y) and finite(value.z)
++end
++local function targetFor(mission, location, branch)
++    local manifest = rawget(_G, "WWFreeRoamManifest")
++    if not plain(manifest) or manifest.schema ~= 1 or not plain(manifest.targets) then return nil end
++    for _, target in ipairs(manifest.targets) do
++        if target.mission == mission and target.location == location and target.branch == branch then
++            local copy = {}
++            for key, value in pairs(target) do copy[key] = value end
++            copy.manifest_sha256 = manifest.manifest_sha256
++            copy.executable_sha256 = manifest.executable_sha256
++            copy.support_fpk = manifest.support_fpk
++            copy.support_fpkd_sha256 = manifest.support_fpkd_sha256
++            return copy
++        end
++    end
++end
++local function requestFor(load, phase)
++    nonce = nonce + 1
++    return { schema = 1, nonce = nonce, generation = load.generation, phase = phase,
++        mission = load.mission, location = load.location, branch = load.branch, id = load.target.id,
++        epoch = load.epoch or 0 }
++end
++local function invoke(fn, request)
++    if busy or type(fn) ~= "function" then return nil end
++    busy = true
++    local supplied = {}
++    for key, value in pairs(request) do supplied[key] = value end
++    local ok, result = pcall(fn, supplied)
++    busy = false
++    if ok and plain(result) then return result end
++end
++local function sameRequest(proof, request)
++    return proof and proof.schema == 1 and proof.nonce == request.nonce and proof.generation == request.generation
++        and proof.phase == request.phase and proof.mission == request.mission and proof.location == request.location
++        and proof.branch == request.branch and proof.id == request.id
++end
++local function verifyPackages(load, phase)
++    if not requested or not providers then return nil end
++    local request = requestFor(load, phase)
++    local proof = invoke(providers.packages, request)
++    if not sameRequest(proof, request) then reason = "package_receipt_stale_or_missing"; return nil end
++    for _, flag in ipairs(requirements) do
++        if proof[flag] ~= true then reason = flag; return nil end
++    end
++    local target = load.target
++    if proof.manifest_sha256 ~= target.manifest_sha256 or proof.executable_sha256 ~= target.executable_sha256
++        or proof.source_fpkd_sha256 ~= target.source_fpkd_sha256 or proof.loader_sha256 ~= target.source_loader_sha256
++        or proof.profile_hash ~= target.profile_hash or proof.package_path ~= target.staged_fpk
++        or proof.companion_path ~= target.staged_fpkd
++        or proof.support_fpk ~= target.support_fpk or proof.support_fpkd_sha256 ~= target.support_fpkd_sha256
++        or not hex(proof.output_fpkd_sha256, 64) or proof.output_fpkd_sha256 == target.source_fpkd_sha256
++        or not hex(proof.support_fpk_sha256, 64) or not hex(proof.session_token, 64)
++        or not hex(proof.center_key, 64) or not center(proof.center)
++        or (proof.role ~= "host" and proof.role ~= "client")
++        or type(proof.sequence_name) ~= "string" or #proof.sequence_name > 128
++        or not proof.sequence_name:match("^[A-Za-z_][A-Za-z0-9_]+$") then
++        reason = "package_receipt_identity"; return nil
++    end
++    if proof.role == "client" and proof.connected_before_load ~= true then
++        reason = "client_not_connected_before_load"; return nil
++    end
++    -- Copy selected data: later mutation of a provider-owned table cannot change a load.
++    return { output_fpkd_sha256 = proof.output_fpkd_sha256, support_fpk_sha256 = proof.support_fpk_sha256,
++        session_token = proof.session_token, center_key = proof.center_key, role = proof.role,
++        client_preconnected = proof.role == "client",
++        sequence_name = proof.sequence_name, center = { x = proof.center.x, y = proof.center.y, z = proof.center.z } }
++end
++local function sameReceipt(a, b)
++    if not a or not b then return false end
++    for key, value in pairs(a) do
++        if key == "center" then
++            if value.x ~= b.center.x or value.y ~= b.center.y or value.z ~= b.center.z then return false end
++        elseif value ~= b[key] then return false end
++    end
++    return true
++end
++local function nativeRoleMatches(role)
++    if type(Dynamite) ~= "table" or type(Dynamite.IsHost) ~= "function" then return false end
++    local ok, host = pcall(Dynamite.IsHost)
++    return ok and type(host) == "boolean" and host == (role == "host")
++end
++
++function e.Configure(optIn, verifier)
++    if busy or acting or active or pending or poisoned then return false, "load_already_selected" end
++    if optIn ~= false and optIn ~= true then return false, "invalid_opt_in" end
++    if optIn and (not plain(verifier) or type(verifier.packages) ~= "function" or type(verifier.runtime) ~= "function") then
++        reason = "verifier_missing"; return false, reason
++    end
++    requested = optIn
++    providers = optIn and { packages = verifier.packages, runtime = verifier.runtime } or nil
++    reason = optIn and "awaiting_package_selection" or "disabled"
++    return true
++end
++
++function e.BeginPackageLoad(mission, location, branch, original)
++    if busy or acting then return original, nil end
++    if poisoned then error("WWFreeRoam failed package selection requires teardown") end
++    local target = targetFor(mission, location, branch)
++    generation = generation + 1
++    local load = { generation = generation, mission = mission, location = location, branch = branch,
++        target = target, cooperative = false, support_added = false }
++    pending = load
++    if not target or target.source_fpk ~= original then reason = "unsupported_package"; return original, generation end
++    load.receipt = verifyPackages(load, "selection")
++    load.cooperative = load.receipt ~= nil
++    if load.cooperative then reason = "selected"; return target.staged_fpk, generation end
++    return original, generation
++end
++
++function e.AppendSupport(token, addPack)
++    if busy or acting or not pending or pending.generation ~= token or not pending.cooperative or pending.support_issued then return false end
++    if type(addPack) ~= "function" then error("WWFreeRoam pack callback missing") end
++    local load = pending
++    load.support_issued = true
++    local ok = pcall(addPack, load.target.support_fpk)
++    if not ok or pending ~= load then
++        load.invalidated = true
++        -- The staged mission pack may already be queued, even when an outer caller
++        -- catches this error. No later/mismatched selection may turn it offline.
++        poisoned, pending = load, nil
++        reason = "support_load_failed"
++        error("WWFreeRoam support package load failed or selection changed")
++    end
++    load.support_added = true
++    return true
++end
++
++local function retainPoisonedLoad()
++    if poisoned and not (active and active.cleanup_needed) then
++        active = poisoned
++        active.cooperative, active.cleanup_needed, active.suspended = false, true, true
++        active.epoch, active.phase = (active.epoch or 0) + 1, "package_load_failed"
++    end
++end
++
++function e.FreezeAllocation(mission, location)
++    if busy then return false end
++    if acting then
++        if (active and active.cleanup_needed) or (pending and pending.cooperative) then error("WWFreeRoam allocation during startup callback") end
++        return false
++    end
++    if poisoned then
++        retainPoisonedLoad()
++        reason = "failed_package_selection"
++        error("WWFreeRoam failed package selection requires teardown")
++    end
++    if active and active.cleanup_needed then error("WWFreeRoam previous load cleanup is pending") end
++    local load = pending
++    pending = nil
++    if not load or load.mission ~= mission or load.location ~= location then
++        generation = generation + 1; load = { generation = generation, mission = mission, location = location, cooperative = false }
++    end
++    local fresh = load.cooperative and not load.invalidated and load.support_added and verifyPackages(load, "allocation") or nil
++    local selected = load.cooperative
++    load.cooperative = fresh ~= nil and sameReceipt(load.receipt, fresh) and nativeRoleMatches(fresh.role)
++    load.cleanup_needed, load.epoch, load.phase, load.last_sample = selected, 1, "allocated", 0
++    active = load
++    if selected and not load.cooperative then
++        load.suspended, load.phase = true, "allocation_rejected"
++        reason = "allocation_receipt_rejected"
++        -- The staged controller was already selected. Never degrade it to offline allocation.
++        error("WWFreeRoam selected package failed allocation validation")
++    end
++    load.receipt = load.cooperative and fresh or nil
++    reason = load.cooperative and "allocated" or "inactive"
++    return load.cooperative
++end
++
++function e.IsCoopLoad(mission, location)
++    return active ~= nil and active.cooperative and active.mission == mission and active.location == location
++end
++local function observe(mission, location, expected, nextPhase)
++    if not e.IsCoopLoad(mission, location) or active.suspended or active.phase ~= expected then return false end
++    active.phase = nextPhase; return true
++end
++function e.ObserveInitialized(mission, location) return observe(mission, location, "allocated", "initialized") end
++function e.ObservePrepared(mission, location) return observe(mission, location, "initialized", "prepared") end
++function e.ObserveGameStarted(mission, location, demo)
++    if not observe(mission, location, "prepared", "game_started") then return false end
++    active.started_in_demo = demo == true
++    -- A common mission-start callback is not an authorization to accept peers.
++    return true
++end
++
++local function suspendNative(load)
++    if load.accepting then
++        if type(TppNetworkUtil) == "table" and type(TppNetworkUtil.SessionEnableAccept) == "function" then
++            local ok, result = pcall(TppNetworkUtil.SessionEnableAccept, false)
++            if ok and result ~= false then load.accepting = false end
++        end
++    end
++    if load.targeting then
++        if type(Dynamite) == "table" and type(Dynamite.StopNearestEnemyThread) == "function" then
++            local ok, result = pcall(Dynamite.StopNearestEnemyThread)
++            if ok and result ~= false then load.targeting = false end
++        end
++    end
++    return not load.accepting and not load.targeting
++end
++function e.SuspendForReload()
++    if busy or not active then return end
++    active.suspended, active.epoch, active.phase = true, active.epoch + 1, "reload_suspended"
++    local complete = suspendNative(active)
++    reason = complete and "reload_suspended" or "suspend_retry_needed"
++    -- Keep cooperative eligibility and cleanup obligation until actual teardown.
++end
++
++function e.CaptureTermination()
++    if busy then return nil end
++    retainPoisonedLoad()
++    if not active then return nil end
++    active.suspended, active.epoch = true, active.epoch + 1
++    if active.termination then return active.termination end
++    local token = { generation = active.generation, needs_cleanup = active.cleanup_needed }
++    active.termination = token
++    return token
++end
++function e.ClaimTerminationCallback(token)
++    if busy or not active or active.termination ~= token or active.termination_callback_attempted then return false end
++    active.termination_callback_attempted = true
++    return true
++end
++function e.CompleteTermination(token)
++    if busy or not active or active.termination ~= token or token.generation ~= active.generation then return false end
++    -- A failed next-package list may coexist with the current mission teardown.
++    -- Only the poisoned generation's own cleanup may release that failure latch.
++    if poisoned == active then pending, poisoned = nil, nil end
++    active = nil
++    reason = "terminated"
++    -- A package list for the next mission may already have been produced.
++    return true
++end
++
++function e.TryStart(token)
++    local load = active
++    if busy or acting or not load or not load.cooperative or load.generation ~= token or load.suspended
++        or load.phase ~= "game_started" or not providers then return false, "load_not_ready" end
++    local request = requestFor(load, "runtime")
++    local proof = invoke(providers.runtime, request)
++    local function reject(code)
++        if load.accepting or load.targeting then
++            load.suspended, load.epoch = true, load.epoch + 1
++            suspendNative(load)
++        end
++        reason = code; return false, code
++    end
++    if not sameRequest(proof, request) or proof.epoch ~= load.epoch or not integer(proof.sample_id)
++        or proof.sample_id <= load.last_sample then return reject("runtime_receipt_stale_or_missing") end
++    load.last_sample = proof.sample_id
++    if proof.role ~= load.receipt.role or not nativeRoleMatches(proof.role) or proof.is_demo ~= false
++        or proof.sequence_name ~= load.receipt.sequence_name or proof.session_token ~= load.receipt.session_token
++        or proof.center_key ~= load.receipt.center_key or proof.center_plan_verified ~= true
++        or proof.local_player_realized ~= true or not integer(proof.member_count)
++        or proof.member_count < 1 or proof.member_count > 2 then return reject("runtime_identity_or_sequence") end
++    if proof.role == "host" then
++        if proof.session_created ~= true then return reject("host_session_not_created") end
++    elseif load.receipt.client_preconnected ~= true or proof.connected ~= true or proof.member_count ~= 2 then
++        return reject("client_must_connect_before_load")
++    end
++    local peerReady = proof.member_count == 2 and proof.peer_live == true and proof.same_world == true
++        and proof.remote_player_realized == true and proof.players_realized == 2
++        and proof.center_agreed == true and proof.initial_sync_ready == true
++    if load.targeting and not peerReady then return reject("live_peer_readiness_lost") end
++    if type(TppCoder) ~= "table" or type(TppCoder.SetWorldCenter) ~= "function" or Vector3 == nil
++        or type(TppNetworkUtil) ~= "table" or type(TppNetworkUtil.SessionEnableAccept) ~= "function"
++        or type(Dynamite.StartNearestEnemyThread) ~= "function" or type(Dynamite.StopNearestEnemyThread) ~= "function" then
++        return reject("native_start_api_missing")
++    end
++    local epoch = load.epoch
++    local function stillCurrent()
++        if active ~= load or load.suspended or load.epoch ~= epoch then error("load invalidated") end
++    end
++    acting = true
++    local ok = pcall(function()
++        if not load.accepting then
++            local c = load.receipt.center
++            TppCoder.SetWorldCenter(Vector3(c.x, c.y, c.z))
++            stillCurrent()
++            load.accepting = true
++            if TppNetworkUtil.SessionEnableAccept(true) == false then error("accept request rejected") end
++            load.accepting = true
++            stillCurrent()
++        end
++        if peerReady and not load.targeting then
++            stillCurrent()
++            load.targeting = true
++            if Dynamite.StartNearestEnemyThread() == false then error("targeting request rejected") end
++            load.targeting = true
++            stillCurrent()
++        end
++        stillCurrent()
++    end)
++    if not ok then
++        load.suspended, load.epoch = true, load.epoch + 1
++        suspendNative(load)
++        acting = false
++        reason = "native_start_failed"
++        return false, reason
++    end
++    acting = false
++    if load.targeting then reason = "startup_calls_issued"; return true, reason end
++    reason = "waiting_for_live_peer"
++    return false, reason
++end
++
++function e.Status()
++    return { requested = requested, pending_generation = pending and pending.generation or 0,
++        active_generation = active and active.generation or 0, epoch = active and active.epoch or 0,
++        cooperative = active and active.cooperative or false, cleanup_needed = active and active.cleanup_needed or false,
++        phase = active and active.phase or "idle", startup_blocked = active and active.suspended or false,
++        accepting_requested = active and active.accepting or false,
++        targeting_requested = active and active.targeting or false, reason = reason }
++end
++
++-- No Init/DeclareSVars/OnReload/OnMessage exports: Tpp auto-dispatch must not reset this state.
++return e
+diff --git a/moddata/standalone/WWFreeRoamManifest.lua b/moddata/standalone/WWFreeRoamManifest.lua
+new file mode 100644
+--- /dev/null
++++ b/moddata/standalone/WWFreeRoamManifest.lua
+@@ -0,0 +1,46 @@
++-- Generated by build-support/generate_free_roam_manifest.py. Data only; never enables co-op.
++return {
++    ["schema"] = 1,
++    ["executable_sha256"] = "f3818d172293800171a344a71957bc7257f591bbf7c1792e10fef6bfbba7f4f2",
++    ["support_fpk"] = "/Assets/tpp/pack/coop/coop_free_roam_support.fpk",
++    ["support_fpkd_sha256"] = "f0665525c0836111e20213eee87ff670f426016954a52bf783314024cfb2ae0b",
++    ["targets"] = {
++        {
++            ["id"] = "afghanistan-normal",
++            ["mission"] = 30010,
++            ["location"] = 10,
++            ["branch"] = "normal",
++            ["source_fpk"] = "/Assets/tpp/pack/mission2/free/f30010/f30010.fpk",
++            ["source_loader_sha256"] = "97c50bee8885f581b54d86f6b42585509a1393436d6225f1f26e5eb5cd402414",
++            ["source_fpkd_sha256"] = "1238d2538db5ba44823cf1703cd0efed5b7b44d6fb6c09c2eaf0ac0df2d6efff",
++            ["profile_hash"] = "0000c94e97c2d50c",
++            ["staged_fpk"] = "/Assets/tpp/pack/coop/free/afghanistan-normal.fpk",
++            ["staged_fpkd"] = "/Assets/tpp/pack/coop/free/afghanistan-normal.fpkd",
++        },
++        {
++            ["id"] = "afghanistan-recover-volgin",
++            ["mission"] = 30010,
++            ["location"] = 10,
++            ["branch"] = "recoverVolginDemo",
++            ["source_fpk"] = "/Assets/tpp/pack/mission2/free/f30010/f30011.fpk",
++            ["source_loader_sha256"] = "081432de1f8dd2c68778670e4a62f41ba7c32ce649e24629f05ac25804e80071",
++            ["source_fpkd_sha256"] = "8c23f7832381540bf315adc22176c851d96ab1faeeb2ba41e584e28e57510b25",
++            ["profile_hash"] = "0000c94e97c2d50c",
++            ["staged_fpk"] = "/Assets/tpp/pack/coop/free/afghanistan-recover-volgin.fpk",
++            ["staged_fpkd"] = "/Assets/tpp/pack/coop/free/afghanistan-recover-volgin.fpkd",
++        },
++        {
++            ["id"] = "africa-normal",
++            ["mission"] = 30020,
++            ["location"] = 20,
++            ["branch"] = "normal",
++            ["source_fpk"] = "/Assets/tpp/pack/mission2/free/f30020/f30020.fpk",
++            ["source_loader_sha256"] = "c250778c09f56fcf960476fdeed9520e399b8ecb55b8437712dee5774e0a8f5c",
++            ["source_fpkd_sha256"] = "d1dcf1e0fcb174ae4df994f6317ee7e6b6a1420a59b5d3f2916c00c783248cba",
++            ["profile_hash"] = "0000bc3759d825c8",
++            ["staged_fpk"] = "/Assets/tpp/pack/coop/free/africa-normal.fpk",
++            ["staged_fpkd"] = "/Assets/tpp/pack/coop/free/africa-normal.fpkd",
++        },
++    },
++    ["manifest_sha256"] = "9ecf1d4dd6351f6204f205d47460ff39b7b16753883c030561e6461a7c3c93ff",
++}

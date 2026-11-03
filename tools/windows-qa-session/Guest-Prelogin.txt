@@ -1,0 +1,57 @@
+& {
+    $ErrorActionPreference = 'Stop'
+    $mgsvIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    if ($mgsvIdentity -notmatch '\\WDAGUtilityAccount$') { throw 'Run only INSIDE the test Sandbox.' }
+    $mgsvInput = 'C:\MGSVQA\Input'
+    $mgsvOutput = 'C:\MGSVQA\Output'
+    $mgsvRun = Get-Content -LiteralPath "$mgsvInput\run.json" -Raw | ConvertFrom-Json
+    if ($mgsvRun.schema -ne 1 -or $mgsvRun.run -notmatch '^[0-9a-f]{32}$') { throw 'Invalid test run manifest.' }
+    $mgsvScriptHash = (Get-FileHash -LiteralPath "$mgsvInput\Guest-Prelogin.txt" -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($mgsvScriptHash -ne $mgsvRun.prelogin_sha256) { throw 'Test instructions changed.' }
+    $mgsvProbe = "$mgsvInput\write-probe-$($mgsvRun.run)"
+    $mgsvDenied = $false
+    $mgsvStream = $null
+    try {
+        $mgsvStream = [IO.File]::Open($mgsvProbe, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    } catch {
+        $mgsvException = $_.Exception.GetBaseException()
+        $mgsvDenied = $mgsvException -is [UnauthorizedAccessException] -and $mgsvException.HResult -eq -2147024891
+        if (-not $mgsvDenied) { throw }
+    }
+    if (-not $mgsvDenied) {
+        if ($mgsvStream) { $mgsvStream.Dispose() }
+        try { Remove-Item -LiteralPath $mgsvProbe -ErrorAction Stop } catch { }
+        throw 'The input folder is writable. Stop.'
+    }
+    if (@(Get-ChildItem -LiteralPath $mgsvOutput -Force).Count -ne 0) { throw 'The fresh report folder is not empty. Stop before login.' }
+    $mgsvSteamRoot = 'C:\Program Files (x86)\Steam'
+    foreach ($mgsvPath in @('C:\Program Files (x86)', $mgsvSteamRoot, "$mgsvSteamRoot\steam.exe")) {
+        $mgsvItem = Get-Item -LiteralPath $mgsvPath -Force
+        if ($mgsvItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Steam storage uses a redirected path. Stop.' }
+    }
+    $mgsvSteamProcesses = @(Get-Process -Name steam -ErrorAction SilentlyContinue)
+    if ($mgsvSteamProcesses.Count -eq 0) { throw 'Steam must be open at its sign-in screen.' }
+    foreach ($mgsvProcess in $mgsvSteamProcesses) {
+        if ($mgsvProcess.Path -ine "$mgsvSteamRoot\steam.exe") { throw 'Steam is running from an unexpected location. Stop.' }
+    }
+    if ([Environment]::GetFolderPath('UserProfile') -ine 'C:\Users\WDAGUtilityAccount') { throw 'Unexpected guest profile path.' }
+    if ([Environment]::GetFolderPath('ApplicationData') -ine 'C:\Users\WDAGUtilityAccount\AppData\Roaming') { throw 'Unexpected guest application-data path.' }
+    if ([Environment]::GetFolderPath('LocalApplicationData') -ine 'C:\Users\WDAGUtilityAccount\AppData\Local') { throw 'Unexpected guest local-data path.' }
+    foreach ($mgsvPath in @('C:\Users', 'C:\Users\WDAGUtilityAccount', 'C:\Users\WDAGUtilityAccount\AppData', 'C:\Users\WDAGUtilityAccount\AppData\Roaming', 'C:\Users\WDAGUtilityAccount\AppData\Local', 'C:\MGSVQA')) {
+        if ((Get-Item -LiteralPath $mgsvPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Guest storage has an unexpected redirection.' }
+    }
+    $mgsvSession = [Guid]::NewGuid().ToString('N')
+    $mgsvSessionFile = [IO.File]::Open('C:\MGSVQA\session.id', [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $mgsvSessionBytes = [Text.Encoding]::ASCII.GetBytes($mgsvSession)
+        $mgsvSessionFile.Write($mgsvSessionBytes, 0, $mgsvSessionBytes.Length)
+    } finally { $mgsvSessionFile.Dispose() }
+    $mgsvText = "WWQA1`n$($mgsvRun.run)`n$mgsvSession`nprelogin`n$mgsvScriptHash`n1,1,1,1`n"
+    $mgsvTemporary = "$mgsvOutput\prelogin.gate.tmp"
+    $mgsvReport = "$mgsvOutput\prelogin.gate"
+    $mgsvBytes = [Text.Encoding]::ASCII.GetBytes($mgsvText)
+    $mgsvFile = [IO.File]::Open($mgsvTemporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $mgsvFile.Write($mgsvBytes, 0, $mgsvBytes.Length); $mgsvFile.Flush() } finally { $mgsvFile.Dispose() }
+    [IO.File]::Move($mgsvTemporary, $mgsvReport)
+    Write-Output 'Prelogin observations saved. Return prelogin.gate and wait before signing in.'
+}

@@ -1,0 +1,502 @@
+diff --git a/hook/CMakeLists.txt b/hook/CMakeLists.txt
+--- a/hook/CMakeLists.txt
++++ b/hook/CMakeLists.txt
+@@ -72,6 +72,7 @@
+ )
+ 
+ add_library(${PROJECT_NAME} SHARED
++        src/SteamInviteProbe.cpp
+         src/mgsvtpp_funcptr_defs.cpp
+         src/mgsvtpp_funcptr_set.cpp
+         src/Tpp/GameObject.cpp
+@@ -106,3 +107,8 @@
+ if(DYNAMITE_QA_STATUS_FILE)
+     target_compile_definitions(${PROJECT_NAME} PRIVATE DYNAMITE_QA_STATUS_FILE=1)
+ endif()
++option(DYNAMITE_QA_STEAM_INVITE_PROBE "Compile the on-demand read-only pinned Steam interface probe" OFF)
++if(DYNAMITE_QA_STEAM_INVITE_PROBE)
++    target_compile_definitions(${PROJECT_NAME} PRIVATE DYNAMITE_QA_STEAM_INVITE_PROBE=1)
++    target_link_libraries(${PROJECT_NAME} bcrypt)
++endif()
+diff --git a/hook/src/DynamiteLua.cpp b/hook/src/DynamiteLua.cpp
+--- a/hook/src/DynamiteLua.cpp
++++ b/hook/src/DynamiteLua.cpp
+@@ -1,6 +1,7 @@
+ #include "DynamiteLua.h"
+ #include "CoopRuntimeObservation.h"
+ #include "CoopStatusFile.h"
++#include "SteamInviteProbe.h"
+ #include "DynamiteHook.h"
+ #include "dynamite.h"
+ #include "lua/lauxlib.h"
+@@ -9,6 +10,17 @@
+ #include "spdlog/spdlog.h"
+ 
+ namespace Dynamite {
++    int l_ReadSteamInviteBinding(lua_State *L) {
++        const auto status = Invites::ProbeLoadedSteamInvites();
++        lua_createtable(L, 0, 6);
++        lua_pushinteger(L, 1); lua_setfield(L, -2, "schema");
++        lua_pushboolean(L, true); lua_setfield(L, -2, "observation_only");
++        lua_pushboolean(L, false); lua_setfield(L, -2, "can_authorize");
++        lua_pushboolean(L, false); lua_setfield(L, -2, "callbacks_registered");
++        lua_pushboolean(L, false); lua_setfield(L, -2, "invites_sent");
++        lua_pushstring(L, Invites::ProbeStatusName(status)); lua_setfield(L, -2, "status");
++        return 1;
++    }
+ #if DYNAMITE_QA_STATUS_FILE
+     static QA::StatusFile &ObservationFile() {
+         static QA::StatusFile status([] {
+@@ -498,6 +510,7 @@
+             {"WarpToPartner", l_WarpToPartner},
+             {"IsSynchronized", l_IsSynchronized},
+             {"ReadRuntimeObservation", l_ReadRuntimeObservation},
++            {"ReadSteamInviteBinding", l_ReadSteamInviteBinding},
+             {"RuntimeObservationDue", l_RuntimeObservationDue},
+             {"PublishRuntimeObservation", l_PublishRuntimeObservation},
+             {"StopRuntimeObservation", l_StopRuntimeObservation},
+diff --git a/hook/src/DynamiteLua.h b/hook/src/DynamiteLua.h
+--- a/hook/src/DynamiteLua.h
++++ b/hook/src/DynamiteLua.h
+@@ -26,6 +26,7 @@
+     int l_WarpToPartner(lua_State *L);
+     int l_IsSynchronized(lua_State *L);
+     int l_ReadRuntimeObservation(lua_State *L);
++    int l_ReadSteamInviteBinding(lua_State *L);
+     int l_RuntimeObservationDue(lua_State *L);
+     int l_PublishRuntimeObservation(lua_State *L);
+     int l_StopRuntimeObservation(lua_State *L);
+diff --git a/hook/src/SteamInviteProtocol.h b/hook/src/SteamInviteProtocol.h
+new file mode 100644
+--- /dev/null
++++ b/hook/src/SteamInviteProtocol.h
+@@ -0,0 +1,77 @@
++#ifndef DYNAMITE_STEAM_INVITE_PROTOCOL_H
++#define DYNAMITE_STEAM_INVITE_PROTOCOL_H
++
++#include <array>
++#include <charconv>
++#include <cstdint>
++#include <optional>
++#include <span>
++#include <string>
++#include <string_view>
++
++namespace Dynamite::Invites {
++    inline constexpr std::string_view ExeSha = "f3818d172293800171a344a71957bc7257f591bbf7c1792e10fef6bfbba7f4f2";
++    inline constexpr std::string_view SteamDllSha = "08bd0152356e5619ee56a6714ac951b6800dbb21821693a4efaf85278442c60a";
++    inline constexpr std::string_view Prefix = "+wwcoop=";
++    inline constexpr std::uint32_t AppId = 287700;
++    inline bool Individual(std::uint64_t id) { return id > 0x0110000100000000ULL && id <= 0x01100001ffffffffULL; }
++    inline bool Target(std::string_view target) {
++        return target == "afghanistan-normal" || target == "afghanistan-recover-volgin" || target == "africa-normal";
++    }
++    inline bool Session(std::string_view value) {
++        return value.size() == 32 && value.find_first_not_of("0123456789abcdef") == std::string_view::npos
++            && value.find_first_not_of('0') != std::string_view::npos;
++    }
++    template <class T> bool Decimal(std::string_view text, T &value) {
++        if (text.empty() || text.size() > 20 || (text.size() > 1 && text.front() == '0')) return false;
++        const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
++        return error == std::errc{} && end == text.data() + text.size() && value > 0;
++    }
++    struct Intent {
++        std::uint64_t host = 0;
++        std::string target, session;
++        std::uint32_t epoch = 0;
++        std::uint64_t expires = 0;
++        bool operator==(const Intent &) const = default;
++    };
++    inline std::optional<Intent> Parse(std::string_view text, std::uint64_t unixSeconds) {
++        if (text.size() > 255 || !text.starts_with(Prefix)) return std::nullopt;
++        text.remove_prefix(Prefix.size());
++        std::array<std::string_view, 8> fields;
++        for (std::size_t i = 0; i < fields.size(); ++i) {
++            const auto separator = text.find(':');
++            if (i + 1 == fields.size()) {
++                if (separator != std::string_view::npos) return std::nullopt;
++                fields[i] = text;
++            } else {
++                if (separator == std::string_view::npos) return std::nullopt;
++                fields[i] = text.substr(0, separator); text.remove_prefix(separator + 1);
++            }
++        }
++        Intent result;
++        if (fields[0] != "1" || fields[1] != "287700" || fields[2] != ExeSha
++            || !Decimal(fields[3], result.host) || !Individual(result.host) || !Target(fields[4])
++            || !Session(fields[5]) || !Decimal(fields[6], result.epoch) || !Decimal(fields[7], result.expires)
++            || result.expires <= unixSeconds || result.expires - unixSeconds > 300) return std::nullopt;
++        result.target = fields[4]; result.session = fields[5];
++        return result;
++    }
++    inline std::string Encode(const Intent &intent) {
++        return std::string(Prefix) + "1:287700:" + std::string(ExeSha) + ":" + std::to_string(intent.host)
++            + ":" + intent.target + ":" + intent.session + ":" + std::to_string(intent.epoch) + ":" + std::to_string(intent.expires);
++    }
++    // Steam appends the direct-invite connect string to the normal launch args.
++    // Parse data only: no shell/URL/Lua evaluation and no launch-option rewriting.
++    inline std::optional<Intent> ColdIntent(std::span<const std::string_view> args, std::uint64_t now) {
++        if (args.size() > 128) return std::nullopt;
++        std::optional<Intent> result;
++        bool seen = false;
++        for (const auto arg : args) {
++            if (!arg.starts_with(Prefix)) continue;
++            if (seen) return std::nullopt;
++            seen = true; result = Parse(arg, now);
++        }
++        return result;
++    }
++}
++#endif
+diff --git a/hook/src/SteamInviteBindings.h b/hook/src/SteamInviteBindings.h
+new file mode 100644
+--- /dev/null
++++ b/hook/src/SteamInviteBindings.h
+@@ -0,0 +1,225 @@
++#ifndef DYNAMITE_STEAM_INVITE_BINDINGS_H
++#define DYNAMITE_STEAM_INVITE_BINDINGS_H
++
++// ABI facts verified against ValveSoftware/Proton e91ca2be0df2cef4c230cbbc0b86604d73a0bbf6,
++// lsteamclient/steamworks_sdk_135/{steam_api.h,steam_api_flat.h,isteamfriends.h}.
++// These are local declarations, not redistributed SDK source. AMD64 only.
++#include "SteamInviteProtocol.h"
++#include <algorithm>
++#include <cstddef>
++#include <cstring>
++#include <deque>
++#include <limits>
++#include <mutex>
++#include <thread>
++#include <vector>
++
++namespace Dynamite::Invites {
++    struct SteamId { std::uint64_t value; };
++    static_assert(sizeof(SteamId) == 8 && sizeof(void *) == 8);
++    class CallbackBase {
++      public:
++        virtual void Run(void *) = 0;
++        virtual void Run(void *, bool, std::uint64_t) = 0;
++        virtual int GetCallbackSizeBytes() = 0;
++        bool Registered() const { return (flags & 1) != 0; }
++        bool LayoutMatches() const {
++            const auto *base = reinterpret_cast<const unsigned char *>(this);
++            return reinterpret_cast<const unsigned char *>(&flags) - base == 8
++                && reinterpret_cast<const unsigned char *>(&callbackId) - base == 12;
++        }
++      protected:
++        ~CallbackBase() = default; // The SDK ABI has exactly three virtual slots, no virtual destructor.
++        std::uint8_t flags = 0;
++        int callbackId = 0;
++    };
++    static_assert(sizeof(CallbackBase) == 16);
++    struct RichJoin { SteamId inviter; char connect[256]; };
++    static_assert(sizeof(RichJoin) == 264 && offsetof(RichJoin, connect) == 8);
++
++    struct Api {
++        void *(*client)() = nullptr;
++        std::int32_t (*userHandle)() = nullptr;
++        std::int32_t (*pipeHandle)() = nullptr;
++        void *(*friends)(std::intptr_t, std::int32_t, std::int32_t, const char *) = nullptr;
++        void *(*user)(std::intptr_t, std::int32_t, std::int32_t, const char *) = nullptr;
++        void *(*utils)(std::intptr_t, std::int32_t, const char *) = nullptr;
++        std::uint32_t (*appId)(std::intptr_t) = nullptr;
++        std::uint64_t (*localId)(std::intptr_t) = nullptr;
++        int (*relationship)(std::intptr_t, SteamId) = nullptr;
++        bool (*invite)(std::intptr_t, SteamId, const char *) = nullptr;
++        void (*registerCallback)(CallbackBase *, int) = nullptr;
++        void (*unregisterCallback)(CallbackBase *) = nullptr;
++        bool Complete() const {
++            return client && userHandle && pipeHandle && friends && user && utils && appId && localId
++                && relationship && invite && registerCallback && unregisterCallback;
++        }
++    };
++    template <class Resolver> std::optional<Api> Resolve(std::string_view fingerprint, Resolver symbol) {
++        if (fingerprint != SteamDllSha) return std::nullopt;
++        Api api;
++#define WW_STEAM_BIND(member, name) api.member = reinterpret_cast<decltype(api.member)>(symbol(name))
++        WW_STEAM_BIND(client, "SteamClient");
++        WW_STEAM_BIND(userHandle, "SteamAPI_GetHSteamUser");
++        WW_STEAM_BIND(pipeHandle, "SteamAPI_GetHSteamPipe");
++        WW_STEAM_BIND(friends, "SteamAPI_ISteamClient_GetISteamFriends");
++        WW_STEAM_BIND(user, "SteamAPI_ISteamClient_GetISteamUser");
++        WW_STEAM_BIND(utils, "SteamAPI_ISteamClient_GetISteamUtils");
++        WW_STEAM_BIND(appId, "SteamAPI_ISteamUtils_GetAppID");
++        WW_STEAM_BIND(localId, "SteamAPI_ISteamUser_GetSteamID");
++        WW_STEAM_BIND(relationship, "SteamAPI_ISteamFriends_GetFriendRelationship");
++        WW_STEAM_BIND(invite, "SteamAPI_ISteamFriends_InviteUserToGame");
++        WW_STEAM_BIND(registerCallback, "SteamAPI_RegisterCallback");
++        WW_STEAM_BIND(unregisterCallback, "SteamAPI_UnregisterCallback");
++#undef WW_STEAM_BIND
++        if (!api.Complete()) return std::nullopt;
++        return api;
++    }
++    enum class BindStatus { MissingExports, ContextNotReady, WrongApp, InvalidLocalIdentity, Bound };
++    struct Context {
++        Api api;
++        std::intptr_t friends = 0;
++        std::uint64_t local = 0;
++        std::thread::id owner;
++        bool OnOwner() const { return owner == std::this_thread::get_id(); }
++    };
++    inline BindStatus Bind(const Api &api, Context &output) {
++        output = {};
++        if (!api.Complete()) return BindStatus::MissingExports;
++        const auto user = api.userHandle(), pipe = api.pipeHandle();
++        if (user <= 0 || pipe <= 0) return BindStatus::ContextNotReady;
++        const auto *client = api.client();
++        if (!client) return BindStatus::ContextNotReady;
++        const auto instance = reinterpret_cast<std::intptr_t>(client);
++        const auto utils = reinterpret_cast<std::intptr_t>(api.utils(instance, pipe, "SteamUtils007"));
++        if (!utils) return BindStatus::ContextNotReady;
++        if (api.appId(utils) != AppId) return BindStatus::WrongApp;
++        const auto friends = reinterpret_cast<std::intptr_t>(api.friends(instance, user, pipe, "SteamFriends015"));
++        const auto steamUser = reinterpret_cast<std::intptr_t>(api.user(instance, user, pipe, "SteamUser018"));
++        if (!friends || !steamUser) return BindStatus::ContextNotReady;
++        const auto local = api.localId(steamUser);
++        if (!Individual(local)) return BindStatus::InvalidLocalIdentity;
++        output = {api, friends, local, std::this_thread::get_id()};
++        return BindStatus::Bound;
++    }
++
++    // Stable, caller-owned callback storage must outlive registration and any
++    // callback in flight. Run's SDK-owned pointer has the SDK's size contract;
++    // it has no length parameter and is not an arbitrary-buffer validation API.
++    class CallbackQueue final : public CallbackBase {
++      public:
++        struct Event { std::uint64_t generation, inviter; std::array<char, 256> connect; };
++        std::optional<std::uint64_t> EnableNext() {
++            std::lock_guard lock(mutex);
++            if (serial == std::numeric_limits<std::uint64_t>::max()) return std::nullopt;
++            generation = ++serial; count = 0; return generation;
++        }
++        void Disable() { std::lock_guard lock(mutex); generation = 0; count = 0; }
++        void Run(void *pointer) override {
++            if (!pointer) return;
++            std::uint64_t entryGeneration;
++            { std::lock_guard lock(mutex); entryGeneration = generation; }
++            if (!entryGeneration) return;
++            RichJoin incoming; std::memcpy(&incoming, pointer, sizeof incoming);
++            const auto *end = static_cast<const char *>(std::memchr(incoming.connect, 0, sizeof incoming.connect));
++            if (!end || !Individual(incoming.inviter.value)) return;
++            const std::string_view text(incoming.connect, static_cast<std::size_t>(end - incoming.connect));
++            if (!text.starts_with(Prefix)) return; // Ordinary game/MGO events remain untouched.
++            std::lock_guard lock(mutex);
++            if (generation != entryGeneration || count == events.size()) return;
++            events[count] = {generation, incoming.inviter.value, {}};
++            std::copy(text.begin(), text.end(), events[count].connect.begin()); ++count;
++        }
++        void Run(void *pointer, bool ioFailure, std::uint64_t) override { if (!ioFailure) Run(pointer); }
++        int GetCallbackSizeBytes() override { return sizeof(RichJoin); }
++        std::vector<Event> Drain() {
++            std::lock_guard lock(mutex);
++            std::vector<Event> result(events.begin(), events.begin() + count); count = 0; return result;
++        }
++      private:
++        std::mutex mutex;
++        std::uint64_t generation = 0, serial = 0;
++        std::array<Event, 8> events{};
++        std::size_t count = 0;
++    };
++    struct ActivationProof {
++        bool saveIsolation = false, resourceContract = false, peerProtocol = false, mgoRouting = false;
++        bool Complete() const { return saveIsolation && resourceContract && peerProtocol && mgoRouting; }
++    };
++    class Channel {
++      public:
++        Channel(Context context, CallbackQueue &callback) : context(context), callback(callback) {}
++        Channel(const Channel &) = delete;
++        Channel &operator=(const Channel &) = delete;
++        Channel(Channel &&) = delete;
++        Channel &operator=(Channel &&) = delete;
++        // Call only after Steam's callback owner is established, outside loader lock.
++        bool StartObserving() {
++            if (!context.OnOwner() || !context.api.Complete() || registered || callback.Registered()
++                || !callback.LayoutMatches()) return false;
++            const auto token = callback.EnableNext();
++            if (!token) return false;
++            generation = *token;
++            context.api.registerCallback(&callback, 337);
++            registered = callback.Registered();
++            if (!registered) { callback.Disable(); context.api.unregisterCallback(&callback); }
++            operational = registered;
++            return operational;
++        }
++        bool Stop() {
++            if (!context.OnOwner()) return false;
++            operational = false;
++            callback.Disable();
++            pending.reset(); seen.clear(); attempted.clear();
++            if (registered) {
++                context.api.unregisterCallback(&callback);
++                if (callback.Registered()) return false;
++                registered = false;
++            }
++            return true;
++        }
++        bool Send(std::uint64_t friendId, const Intent &intent, const ActivationProof &proof, std::uint64_t now) {
++            if (!context.OnOwner() || !operational || !registered || !proof.Complete() || !Individual(friendId) || friendId == context.local
++                || intent.host != context.local || !Target(intent.target) || !Session(intent.session)
++                || !intent.epoch || intent.expires <= now || intent.expires - now > 300
++                || context.api.relationship(context.friends, {friendId}) != 3) return false;
++            const auto text = Encode(intent);
++            if (!Parse(text, now)) return false;
++            const auto key = std::to_string(friendId) + ":" + text;
++            if (std::find(attempted.begin(), attempted.end(), key) != attempted.end() || attempted.size() >= 32) return false;
++            attempted.push_back(key); // No automatic retry, including an ambiguous/failed send.
++            return context.api.invite(context.friends, {friendId}, text.c_str());
++        }
++        bool Poll(std::uint64_t now) {
++            if (!context.OnOwner() || !operational || !registered) return false;
++            if (pending && !Parse(Encode(*pending), now)) pending.reset();
++            for (const auto &event : callback.Drain()) {
++                if (event.generation != generation || pending) continue;
++                const auto parsed = Parse(std::string_view(event.connect.data()), now);
++                if (!parsed || parsed->host != event.inviter || parsed->host == context.local
++                    || context.api.relationship(context.friends, {event.inviter}) != 3) continue;
++                // Exact callbacks deduplicate, while an explicitly renewed
++                // invitation (new expiry) may retry the same hosted session.
++                const auto key = Encode(*parsed);
++                if (std::find(seen.begin(), seen.end(), key) != seen.end() || seen.size() >= 32) continue;
++                seen.push_back(key); pending = parsed;
++            }
++            return pending.has_value();
++        }
++        std::optional<Intent> TakeIntent(std::uint64_t now) {
++            if (!context.OnOwner()) return std::nullopt;
++            auto result = pending; pending.reset();
++            if (result && !Parse(Encode(*result), now)) result.reset();
++            return result; // Join intent only. No role change, session, mission load or config write.
++        }
++        bool Active() const { return context.OnOwner() && operational; }
++      private:
++        Context context;
++        CallbackQueue &callback;
++        bool registered = false, operational = false;
++        std::uint64_t generation = 0;
++        std::optional<Intent> pending;
++        std::vector<std::string> seen, attempted;
++    };
++}
++#endif
+diff --git a/hook/src/SteamInviteProbe.h b/hook/src/SteamInviteProbe.h
+new file mode 100644
+--- /dev/null
++++ b/hook/src/SteamInviteProbe.h
+@@ -0,0 +1,9 @@
++#ifndef DYNAMITE_STEAM_INVITE_PROBE_H
++#define DYNAMITE_STEAM_INVITE_PROBE_H
++
++namespace Dynamite::Invites {
++    enum class ProbeStatus { Disabled, ModuleAbsent, ModuleFingerprintRejected, MissingExports, ContextNotReady, WrongApp, InvalidIdentity, Bound, ProbeFailed };
++    ProbeStatus ProbeLoadedSteamInvites();
++    const char *ProbeStatusName(ProbeStatus value);
++}
++#endif
+diff --git a/hook/src/SteamInviteProbe.cpp b/hook/src/SteamInviteProbe.cpp
+new file mode 100644
+--- /dev/null
++++ b/hook/src/SteamInviteProbe.cpp
+@@ -0,0 +1,103 @@
++#include "SteamInviteProbe.h"
++#include "SteamInviteBindings.h"
++
++#if DYNAMITE_QA_STEAM_INVITE_PROBE
++#include <windows.h>
++#include <bcrypt.h>
++#include <array>
++
++namespace Dynamite::Invites {
++    struct LoadedModuleReference {
++        HMODULE value = nullptr;
++        ~LoadedModuleReference() { if (value) FreeLibrary(value); }
++    };
++    struct HashResources {
++        HANDLE file = INVALID_HANDLE_VALUE;
++        BCRYPT_ALG_HANDLE algorithm = nullptr;
++        BCRYPT_HASH_HANDLE hash = nullptr;
++        std::vector<unsigned char> object;
++        ~HashResources() {
++            if (hash) BCryptDestroyHash(hash);
++            if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
++            if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
++        }
++    };
++    static bool PinnedModule(HMODULE module) {
++        wchar_t filename[32768];
++        const auto length = GetModuleFileNameW(module, filename, 32768);
++        if (!length || length == 32768) return false;
++        HashResources resources;
++        resources.file = CreateFileW(filename, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
++            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
++        if (resources.file == INVALID_HANDLE_VALUE) return false;
++        LARGE_INTEGER size;
++        if (!GetFileSizeEx(resources.file, &size) || size.QuadPart != 211368) return false;
++        bool valid = false;
++        if (BCryptOpenAlgorithmProvider(&resources.algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) >= 0) {
++            DWORD objectSize = 0, received = 0;
++            if (BCryptGetProperty(resources.algorithm, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&objectSize), sizeof objectSize, &received, 0) >= 0
++                && received == sizeof objectSize && objectSize > 0 && objectSize < 65536) {
++                resources.object.resize(objectSize);
++                if (BCryptCreateHash(resources.algorithm, &resources.hash, resources.object.data(), objectSize, nullptr, 0, 0) >= 0) {
++                    std::array<unsigned char, 16384> buffer;
++                    DWORD count = 0;
++                    std::uint64_t total = 0;
++                    valid = true;
++                    for (;;) {
++                        if (!ReadFile(resources.file, buffer.data(), buffer.size(), &count, nullptr)) { valid = false; break; }
++                        if (!count) break;
++                        total += count;
++                        if (total > 211368 || BCryptHashData(resources.hash, buffer.data(), count, 0) < 0) { valid = false; break; }
++                    }
++                    std::array<unsigned char, 32> digest;
++                    valid = valid && total == 211368 && BCryptFinishHash(resources.hash, digest.data(), digest.size(), 0) >= 0;
++                    if (valid) {
++                        const char hex[] = "0123456789abcdef"; std::string encoded;
++                        for (const auto byte : digest) { encoded += hex[byte >> 4]; encoded += hex[byte & 15]; }
++                        valid = encoded == SteamDllSha;
++                    }
++                }
++            }
++        }
++        return valid;
++    }
++    ProbeStatus ProbeLoadedSteamInvites() {
++        // Borrow the game's loaded module/context. No LoadLibrary, Init, Shutdown,
++        // callback pumping/registration, invites, rich-presence writes or config.
++        try {
++        LoadedModuleReference module;
++        if (!GetModuleHandleExW(0, L"steam_api64.dll", &module.value)) return ProbeStatus::ModuleAbsent;
++        if (!PinnedModule(module.value)) return ProbeStatus::ModuleFingerprintRejected;
++        const auto api = Resolve(SteamDllSha, [&module](const char *name) { return GetProcAddress(module.value, name); });
++        if (!api) return ProbeStatus::MissingExports;
++        Context context;
++        switch (Bind(*api, context)) {
++        case BindStatus::Bound: return ProbeStatus::Bound;
++        case BindStatus::WrongApp: return ProbeStatus::WrongApp;
++        case BindStatus::InvalidLocalIdentity: return ProbeStatus::InvalidIdentity;
++        case BindStatus::MissingExports: return ProbeStatus::MissingExports;
++        default: return ProbeStatus::ContextNotReady;
++        }
++        } catch (...) { return ProbeStatus::ProbeFailed; }
++    }
++}
++#else
++namespace Dynamite::Invites { ProbeStatus ProbeLoadedSteamInvites() { return ProbeStatus::Disabled; } }
++#endif
++
++namespace Dynamite::Invites {
++    const char *ProbeStatusName(ProbeStatus value) {
++        switch (value) {
++        case ProbeStatus::Disabled: return "disabled";
++        case ProbeStatus::ModuleAbsent: return "module_absent";
++        case ProbeStatus::ModuleFingerprintRejected: return "module_fingerprint_rejected";
++        case ProbeStatus::MissingExports: return "missing_exports";
++        case ProbeStatus::ContextNotReady: return "steam_context_not_ready";
++        case ProbeStatus::WrongApp: return "wrong_app_id";
++        case ProbeStatus::InvalidIdentity: return "local_identity_unavailable";
++        case ProbeStatus::Bound: return "interfaces_bound_read_only";
++        case ProbeStatus::ProbeFailed: return "probe_failed";
++        }
++        return "unavailable";
++    }
++}

@@ -1,0 +1,89 @@
+& {
+    $ErrorActionPreference = 'Stop'
+    Set-StrictMode -Version 2.0
+    $mgsvIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    if ($mgsvIdentity -notmatch '\\WDAGUtilityAccount$') { throw 'Run only INSIDE the validated test Sandbox.' }
+    if ($PSDefaultParameterValues.Count -ne 0 -or $global:PSDefaultParameterValues.Count -ne 0) { throw 'Use a fresh powershell.exe -NoLogo -NoProfile guest shell.' }
+    if (Microsoft.PowerShell.Utility\Get-Variable -Name PSSenderInfo -ValueOnly -ErrorAction SilentlyContinue) { throw 'Use a local guest shell, not a remote session.' }
+    $mgsvPrincipal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+    if (-not $mgsvPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Administrator PowerShell is required INSIDE the guest.' }
+    $mgsvInput = 'C:\MGSVQA\Input'
+    $mgsvOutput = 'C:\MGSVQA\Output'
+    $mgsvRequestPath = "$mgsvInput\offline-request.json"
+    if ((Microsoft.PowerShell.Management\Get-Item -LiteralPath $mgsvRequestPath).Length -gt 2048) { throw 'Oversized offline request.' }
+    $mgsvRequest = Microsoft.PowerShell.Management\Get-Content -LiteralPath $mgsvRequestPath -Raw | Microsoft.PowerShell.Utility\ConvertFrom-Json
+    $mgsvRun = Microsoft.PowerShell.Management\Get-Content -LiteralPath "$mgsvInput\run.json" -Raw | Microsoft.PowerShell.Utility\ConvertFrom-Json
+    if ($mgsvRequest.schema -ne 1 -or $mgsvRequest.stage -ne 'offline-v1' -or $mgsvRequest.run -notmatch '^[0-9a-f]{32}$' -or $mgsvRequest.session -notmatch '^[0-9a-f]{32}$' -or $mgsvRequest.challenge -notmatch '^[0-9a-f]{32}$') { throw 'Invalid offline request.' }
+    if ($mgsvRequest.run -ne $mgsvRun.run) { throw 'Wrong test run.' }
+    if ($mgsvRequest.session -ne [IO.File]::ReadAllText('C:\MGSVQA\session.id')) { throw 'Wrong guest session. Do not reuse an old report.' }
+    $mgsvSourceTag = (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath "$mgsvInput\GUEST-OFFLINE.txt" -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($mgsvRequest.source_tag -ne $mgsvSourceTag) { throw 'Offline instructions changed.' }
+    if ([Environment]::GetFolderPath('UserProfile') -ine 'C:\Users\WDAGUtilityAccount' -or $env:USERPROFILE -ine 'C:\Users\WDAGUtilityAccount') { throw 'Unexpected guest profile.' }
+    if ([Environment]::GetFolderPath('ApplicationData') -ine 'C:\Users\WDAGUtilityAccount\AppData\Roaming' -or $env:APPDATA -ine 'C:\Users\WDAGUtilityAccount\AppData\Roaming') { throw 'Unexpected guest application data.' }
+    if ([Environment]::GetFolderPath('LocalApplicationData') -ine 'C:\Users\WDAGUtilityAccount\AppData\Local' -or $env:LOCALAPPDATA -ine 'C:\Users\WDAGUtilityAccount\AppData\Local') { throw 'Unexpected guest local data.' }
+    foreach ($mgsvPath in @('C:\MGSVQA', 'C:\Users', 'C:\Users\WDAGUtilityAccount', 'C:\Users\WDAGUtilityAccount\AppData', 'C:\Program Files (x86)', 'C:\Program Files (x86)\Steam')) {
+        if ((Microsoft.PowerShell.Management\Get-Item -LiteralPath $mgsvPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unexpected guest storage redirection.' }
+    }
+    $mgsvProbe = "$mgsvInput\readonly-$($mgsvRequest.challenge)"
+    $mgsvDenied = $false
+    $mgsvStream = $null
+    try { $mgsvStream = [IO.File]::Open($mgsvProbe, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None) }
+    catch {
+        $mgsvException = $_.Exception.GetBaseException()
+        $mgsvDenied = $mgsvException -is [UnauthorizedAccessException] -and $mgsvException.HResult -eq -2147024891
+        if (-not $mgsvDenied) { throw }
+    }
+    if (-not $mgsvDenied) {
+        if ($mgsvStream) { $mgsvStream.Dispose() }
+        try { Microsoft.PowerShell.Management\Remove-Item -LiteralPath $mgsvProbe -ErrorAction Stop } catch { }
+        throw 'Input is writable. No network change was made.'
+    }
+    function Test-MgsvSteamClosed {
+        $mgsvProcesses = @(Microsoft.PowerShell.Management\Get-Process | Where-Object { $_.ProcessName -in @('steam', 'steamwebhelper') })
+        if ($mgsvProcesses.Count -ne 0) { throw 'Use Steam Go Offline, then Steam Exit, and wait for the client to close.' }
+    }
+    Test-MgsvSteamClosed
+    $mgsvRuleName = 'MGSV_QA_OFFLINE_' + $mgsvRequest.challenge
+    $mgsvRules = @(NetSecurity\Get-NetFirewallRule -Name $mgsvRuleName -PolicyStore PersistentStore -ErrorAction SilentlyContinue)
+    if ($mgsvRules.Count -gt 1) { throw 'Ambiguous existing guest rule.' }
+    # All target checks above precede mutations. Module-qualified local cmdlets
+    # run in a fresh shell with no inherited CimSession defaults.
+    if ((Microsoft.PowerShell.Management\Get-Service -Name MpsSvc).Status.ToString() -ne 'Running') { Microsoft.PowerShell.Management\Start-Service -Name MpsSvc }
+    NetSecurity\Set-NetFirewallProfile -Profile Domain, Private, Public -Enabled True
+    if ($mgsvRules.Count -eq 0) {
+        NetSecurity\New-NetFirewallRule -Name $mgsvRuleName -DisplayName $mgsvRuleName -PolicyStore PersistentStore -Direction Outbound -Action Block -Enabled True -Profile Any -Protocol Any | Out-Null
+    }
+    function Test-MgsvAny($mgsvValue) { return @($mgsvValue).Count -eq 1 -and @($mgsvValue)[0].ToString() -eq 'Any' }
+    function Test-MgsvFirewall {
+        if ((Microsoft.PowerShell.Management\Get-Service -Name MpsSvc).Status.ToString() -ne 'Running') { throw 'Guest firewall service is not running.' }
+        $mgsvProfiles = @(NetSecurity\Get-NetFirewallProfile -PolicyStore ActiveStore)
+        if ($mgsvProfiles.Count -ne 3 -or @($mgsvProfiles | Where-Object { $_.Enabled.ToString() -ne 'True' }).Count -ne 0) { throw 'Not all guest firewall profiles are enabled.' }
+        $mgsvActive = @(NetSecurity\Get-NetFirewallRule -Name $mgsvRuleName -PolicyStore ActiveStore)
+        if ($mgsvActive.Count -ne 1) { throw 'Guest outbound rule is not active.' }
+        $mgsvRule = $mgsvActive[0]
+        if ($mgsvRule.Enabled.ToString() -ne 'True' -or $mgsvRule.Direction.ToString() -ne 'Outbound' -or $mgsvRule.Action.ToString() -ne 'Block' -or $mgsvRule.Profile.ToString() -ne 'Any') { throw 'Guest rule does not block all outbound profiles.' }
+        $mgsvAddress = $mgsvRule | NetSecurity\Get-NetFirewallAddressFilter
+        $mgsvPort = $mgsvRule | NetSecurity\Get-NetFirewallPortFilter
+        $mgsvApp = $mgsvRule | NetSecurity\Get-NetFirewallApplicationFilter
+        $mgsvService = $mgsvRule | NetSecurity\Get-NetFirewallServiceFilter
+        $mgsvInterface = $mgsvRule | NetSecurity\Get-NetFirewallInterfaceFilter
+        $mgsvInterfaceType = $mgsvRule | NetSecurity\Get-NetFirewallInterfaceTypeFilter
+        if (-not (Test-MgsvAny $mgsvAddress.LocalAddress) -or -not (Test-MgsvAny $mgsvAddress.RemoteAddress) -or -not (Test-MgsvAny $mgsvPort.LocalPort) -or -not (Test-MgsvAny $mgsvPort.RemotePort) -or $mgsvPort.Protocol.ToString() -notin @('Any', '256') -or -not (Test-MgsvAny $mgsvApp.Program) -or -not (Test-MgsvAny $mgsvService.Service) -or -not (Test-MgsvAny $mgsvInterface.InterfaceAlias) -or -not (Test-MgsvAny $mgsvInterfaceType.InterfaceType)) { throw 'Guest outbound rule is narrower than requested.' }
+    }
+    Test-MgsvFirewall
+    $mgsvAdapters = @(NetAdapter\Get-NetAdapter -IncludeHidden | Where-Object { $_.Status.ToString() -eq 'Up' })
+    foreach ($mgsvAdapter in $mgsvAdapters) { $mgsvAdapter | NetAdapter\Disable-NetAdapter -Confirm:$false }
+    if (@(NetAdapter\Get-NetAdapter -IncludeHidden | Where-Object { $_.Status.ToString() -eq 'Up' }).Count -ne 0) { throw 'A guest adapter remains up.' }
+    Test-MgsvFirewall
+    Test-MgsvSteamClosed
+    # This is a point-in-time local policy/adapter observation, not VM
+    # attestation, permanent staging permission, licensing or multiplayer proof.
+    $mgsvText = "WWQA2`n$($mgsvRequest.run)`n$($mgsvRequest.session)`n$($mgsvRequest.challenge)`noffline`n$mgsvSourceTag`n1,1,1,1,1,1`n"
+    $mgsvTemporary = "$mgsvOutput\offline.gate.tmp"
+    $mgsvReport = "$mgsvOutput\offline.gate"
+    $mgsvBytes = [Text.Encoding]::ASCII.GetBytes($mgsvText)
+    $mgsvFile = [IO.File]::Open($mgsvTemporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $mgsvFile.Write($mgsvBytes, 0, $mgsvBytes.Length); $mgsvFile.Flush() } finally { $mgsvFile.Dispose() }
+    [IO.File]::Move($mgsvTemporary, $mgsvReport)
+    Write-Output 'Guest network cutoff recorded. Keep this guest offline. Return offline.gate and offline-request.json before any game staging.'
+}
