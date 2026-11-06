@@ -1,9 +1,17 @@
 # Steam invitations as the normal join flow
 
-Required behavior: the host invites friends through Steam. A guest accepts and
-joins automatically, with no SteamID/IP entry or guest connection-configuration
-editing. Cover an already-running guest and a guest whose game must first launch.
-Use MGSV's App 287700 and the correct compatible mod copy.
+Intended normal behavior: the host invites friends through regular Steam
+invitations. A guest accepts and joins automatically. SteamID entry is acceptable
+as an interim/fallback method. Cover an already-running guest and a guest whose
+game must first launch. Use MGSV's App 287700 and the correct compatible mod copy.
+
+Both methods must work without required router port forwarding. Treat invitation
+delivery and the actual game transport separately: verify the existing Steam
+peer/relay path and installed interface support, and implement an adapter if needed.
+Do not infer NAT traversal or relay success from an accepted invitation. Validate
+two PCs on different internet connections, including restrictive NAT and relay
+fallback, without depending on manual/automatic router port-mapping configuration.
+These transport properties have not yet been verified in the mod.
 
 ## Source-backed gaps
 

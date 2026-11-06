@@ -221,10 +221,10 @@
   },
   "steam_invites": {
     "required": true,
-    "normal_guest_flow": "accept_Steam_invite_without_manual_ID_IP_or_guest_connection_config",
+    "normal_guest_flow": "accept_regular_Steam_invite_without_entering_connection_data",
     "integration": "not_implemented",
     "actual_interfaces_and_callbacks": "standalone_interfaces_and_registration_verified_delivery_and_game_context_unverified",
-    "next_input": "owner_approval_first_offline_baseline_game_startup",
+    "next_input": "owner_restart_result_json_or_exact_restart_error",
     "existing_MGO_invitation_path": "must_preserve_and_distinguish",
     "app_id": 287700,
     "metadata_report": "accepted_all_12_required_flat_exports_and_pinned_module_match",
@@ -241,7 +241,12 @@
     "connected_peer_protocol_and_world_authentication": "not_implemented",
     "runtime_interface_verification_scope": "owner_standalone_check_only_not_inside_MGSV",
     "game_borrowed_context_verified": false,
-    "real_callback_delivery_verified": false
+    "real_callback_delivery_verified": false,
+    "interim_or_fallback_steam_id_entry_allowed": true,
+    "connectivity_requirement": "no_required_router_port_forwarding",
+    "port_forwarding_free_connectivity_verified": false,
+    "peer_and_relay_transport": "unverified_separately_from_invitation_delivery",
+    "cross_network_restrictive_NAT_and_relay_tests": "not_run"
   },
   "steam_capabilities_probe": {
     "path": "build-artifacts/steam-capabilities/mgsv-steam-capabilities.pyz",
@@ -486,5 +491,55 @@
     "result": "passed_fresh_seven_patch_application_and_byte_mode_comparison",
     "source_files": 30,
     "base_commit": "7fe74d31128ed8d3741b07181cb99e4adc1f57be"
+  },
+  "qa_session_continuity": {
+    "owner_reported_guest_closed": true,
+    "recorded_client_date": "2026-11-04",
+    "old_captures_remain_historical_evidence": true,
+    "old_requests_valid_for_new_guest": false,
+    "host_game_cache_presence": "owner_reported_both_paths_present",
+    "next_action": "owner_run_new_restart_packet",
+    "restart_coordinator": "implemented_packaged_15_focused_checks_passed_Windows_run_pending",
+    "previous_startup_approval_retained": true,
+    "current_host_cache_hash_verification": "pending_owner_coordinator_execution"
+  },
+  "requested_coverage": {
+    "main_missions": "all_1_through_50_plus_prologue_and_variants",
+    "side_ops": "all",
+    "free_roam": true,
+    "both_co_op_saves_advance": true,
+    "mission_exceptions": [],
+    "completion_requirement": "every_main_mission_prologue_variant_Side_Op_and_Free_Roam_co_op_playable",
+    "unresolved_mission_blockers": "unfinished_work_not_accepted_exclusions"
+  },
+  "current_public_build_compatibility": {
+    "goal": "secondary_feasibility_track",
+    "status": "not_established",
+    "development_baseline": "regular_Steam_1.0.15.3_pinned_executable",
+    "historically_reported_other_build": "1.0.15.4_not_verified_as_current_latest",
+    "current_public_build_identity": "needs_fresh_identification",
+    "native_address_map_and_fixed_byte_patches": "version_specific_source_confirmed",
+    "new_build_profile": "not_implemented_or_validated",
+    "new_build_game_tests": "not_run",
+    "mixed_build_multiplayer": "not_assumed",
+    "immediate_restart_steps_changed": false
+  },
+  "qa_restart_packet": {
+    "path": "build-artifacts/windows-qa-restart/MGSV-QA-restart.zip",
+    "size": 32426,
+    "sha256": "61ffef2ba430b35ed1d818aa4806b7ae43ef7f6793eaa8dae74acb0fb9a5e7c2",
+    "tests": "15_focused_passed",
+    "validation_date": "2026-11-07 Australia/Sydney",
+    "source_review": "no_remaining_concrete_blocker",
+    "Windows_runtime": "not_run_pending_owner",
+    "cache_hashes_verified_on_owner_host": false,
+    "guest_source_sha256": "0488b910550bb0a1551b6bda90f08ab8dc43c8b05991b6e453339e56481009c5",
+    "host_source_sha256": "0c6f004daa9be87018bcba294cd3792427c2f56c93203724192bbe73bf1dd76f",
+    "initial_game_mapping": false,
+    "private_session_checks": "fresh_per_boot_local_validation",
+    "owner_startup_approval": "retained_from_prior_chat",
+    "network_reenabled": false,
+    "game_or_mod_ran_in_cloud": false,
+    "co_op_verified": false
   }
 }

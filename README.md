@@ -1,8 +1,15 @@
 # weedwackaz
 
 Development toward MGSV co-op across every story mission, all Side Ops and Free Roam.
+Every mission, including Missions 1 and 46, is required for the completed mod;
+there are no planned mission exclusions.
 Windows is primary, Proton secondary; two players first and four later. Both players'
 co-op saves must receive completion and rewards. Dynamite v0.6.0 is the baseline.
+Regular Steam invitations are the intended join flow; SteamID entry is acceptable
+as an interim/fallback method. Connectivity must not require router port forwarding.
+Compatibility with the current regular Steam release is an additional
+[feasibility goal](docs/current-version-feasibility.md); the present code remains
+pinned to the identified 1.0.15.3 baseline.
 
 Full coverage is not implemented or validated. Preliminary Windows and Linux
 installers now build; a runtime registry capture has been cataloged privately.
@@ -31,6 +38,8 @@ the game. The verification checks all seven patches against 30 current source fi
 
 - [Setup guide](docs/mgsv-coop.md)
 - [Remaining tasks in dependency order](docs/NEXT-STEPS.md)
+- [Restart roadmap after closing Sandbox](docs/ROADMAP.md)
+- [Single-session Windows restart packet](docs/windows-restart.md)
 - [Full-coverage scope and next development gates](docs/full-coverage.md)
 - [First Free Roam integration milestone](docs/free-roam-integration.md)
 - [Passive native runtime observations](docs/runtime-observation.md)

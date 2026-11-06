@@ -1,10 +1,24 @@
 # Remaining work in dependency order
 
+The owner has since closed the Windows Sandbox. See the
+[restart and development roadmap](ROADMAP.md) before running another QA helper:
+the host cache may be reusable, but the old session-bound requests are stale.
+The owner has confirmed the cache paths exist. The new
+[restart packet](windows-restart.md) hashes the cache and coordinates a fresh
+session locally; its first Windows run is the next owner action.
+
 Target: Steam App 287700, regular 1.0.15.3, two players first; Windows primary,
-Proton secondary. All story missions, Side Ops and Free Roam remain the goal.
-Completion/rewards must advance both isolated co-op saves. The host must invite
-through Steam; accepting the invitation must join without typing SteamIDs/IPs or
-editing guest connection settings. Four players is a later extension.
+Proton secondary. Every main mission, including Missions 1 and 46, prologue/variants,
+all Side Ops and Free Roam is required, with no planned mission exclusions. Completion/rewards
+must advance both isolated co-op saves. Regular Steam invitations are the intended
+normal join flow; SteamID entry is acceptable as an interim/fallback method.
+Neither path may depend on router port forwarding. Four players is a later extension.
+
+Additional feasibility goal: support the current regular public Steam build.
+Identify that build and assess its native/resource differences early; do not assume
+the previously reported 1.0.15.4 is still current or run 1.0.15.3 hooks on it.
+See [the compatibility assessment](current-version-feasibility.md). The restart
+and baseline startup remain the immediate dependency.
 
 1. **Finish local observability and its automated scorer.** Implemented in patch 0005:
    an opt-in, bounded atomic status-file publisher plus a read-only smoke runner.
@@ -23,7 +37,11 @@ editing guest connection settings. Four players is a later extension.
    invitation discovery/acceptance, private guest admission, deferred joining during
    loading and automatic mission selection. Handle warm and cold acceptance, the
    correct patched executable and local Fuse sidecar. Keep App 287700. Preserve the
-   existing MGO invitation path. No manual ID/IP exchange is an acceptable final flow.
+   existing MGO invitation path. SteamID entry is acceptable for early measurements
+   and as a fallback; ordinary Steam invitations remain the normal-flow goal.
+   Verify the actual peer/relay transport separately, including two internet
+   connections and restrictive NAT without router port forwarding. The current
+   invitation components do not establish that connectivity contract.
    Patch 0006 now supplies flat binding, strict warm/cold intent parsing, a bounded
    callback queue and gated send/receive components tested with fake exports. It
    does not yet supply the friend picker, automatic FOX join/load, cold sidecar

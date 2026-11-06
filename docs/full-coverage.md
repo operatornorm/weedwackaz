@@ -1,10 +1,16 @@
 # Full-coverage co-op development
 
-Target: every story mission (including prologue and variants), all Side Ops and
-Free Roam. Two players first, Windows primary, Proton secondary; four players later.
+Target: every main mission (1-50, plus prologue and variants), all Side Ops and
+Free Roam. This is a complete-coverage requirement with no planned mission
+exceptions; Missions 1 and 46 have the same requirement as every other mission.
+Any unresolved mission blocker remains unfinished work. Two players first, Windows primary, Proton
+secondary; four players later.
 Both players' separate co-op saves must receive completion and rewards while original
 single-player saves remain separate. Host authority needs ordered, deduplicated
 completion/reward application rather than copying a whole host profile.
+Regular Steam invitations are the normal-flow goal, with SteamID entry acceptable
+as an interim/fallback method. Both must avoid required router port forwarding;
+the underlying peer/relay transport remains to be validated independently.
 
 ## Source audit
 

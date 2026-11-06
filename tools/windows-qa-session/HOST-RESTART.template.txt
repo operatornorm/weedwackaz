@@ -1,0 +1,301 @@
+& {
+    $ErrorActionPreference = 'Stop'
+    Set-StrictMode -Version 2.0
+    if ([Security.Principal.WindowsIdentity]::GetCurrent().Name -match '\\WDAGUtilityAccount$') { throw 'Run this block on your NORMAL Windows desktop, outside Sandbox.' }
+    if ($PSDefaultParameterValues.Count -ne 0 -or $global:PSDefaultParameterValues.Count -ne 0) { throw 'Use a fresh powershell.exe -NoLogo -NoProfile host window.' }
+    if (Get-Variable -Name PSSenderInfo -ValueOnly -ErrorAction SilentlyContinue) { throw 'Use a local host shell.' }
+    $mgsvCacheRun = '__CACHE_RUN__'
+    $mgsvCacheManifestTag = '__CACHE_MANIFEST_SHA256__'
+    $mgsvExpectedJson = '__CACHE_FILES_JSON__'
+    $mgsvPackageJson = '__PACKAGE_FILES_JSON__'
+    $mgsvSessionTag = '__SESSION_SOURCE_SHA256__'
+    $mgsvPreloginTag = '__PRELOGIN_SOURCE_SHA256__'
+    $mgsvOfflineTag = '__OFFLINE_SOURCE_SHA256__'
+    $mgsvStageTag = '__STAGE_SOURCE_SHA256__'
+    $mgsvStartupTag = '__STARTUP_SOURCE_SHA256__'
+    $mgsvInput = $null
+    $mgsvOutput = $null
+    $mgsvProfile = $null
+    $mgsvRetired = $null
+    $mgsvLaunched = $false
+    $mgsvLaunchClock = $null
+    $mgsvSummary = $null
+    function Assert-MgsvPlain($mgsvPath) {
+        $mgsvItem = Get-Item -LiteralPath $mgsvPath -Force
+        if ($mgsvItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unexpected storage redirection.' }
+        return $mgsvItem
+    }
+    function Convert-MgsvJson($mgsvRaw) {
+        # Protocol metadata is deliberately unescaped ASCII. Reject duplicate
+        # object keys (including case variants), escapes and unparsed tokens.
+        if ($mgsvRaw.Length -gt 16384 -or $mgsvRaw -cmatch '[^\x09\x0a\x0d\x20-\x7e]' -or $mgsvRaw.Contains('\')) { throw 'Invalid protocol text.' }
+        $mgsvTokens = [regex]::Matches($mgsvRaw, '"[^"\\\x00-\x1f]*"|true|false|null|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|[{}\[\]:,]')
+        $mgsvStack = [Collections.Generic.Stack[object]]::new()
+        $mgsvPosition = 0
+        for ($mgsvI = 0; $mgsvI -lt $mgsvTokens.Count; $mgsvI++) {
+            $mgsvToken = $mgsvTokens[$mgsvI]
+            if ($mgsvRaw.Substring($mgsvPosition, $mgsvToken.Index - $mgsvPosition).Trim().Length -ne 0) { throw 'Unparsed protocol token.' }
+            $mgsvPosition = $mgsvToken.Index + $mgsvToken.Length
+            $mgsvValue = $mgsvToken.Value
+            if ($mgsvValue -eq '{') { $mgsvStack.Push(@{kind='object'; seen=@{}}) }
+            elseif ($mgsvValue -eq '[') { $mgsvStack.Push(@{kind='array'}) }
+            elseif ($mgsvValue -eq '}' -or $mgsvValue -eq ']') {
+                if ($mgsvStack.Count -eq 0) { throw 'Unbalanced JSON.' }
+                $mgsvTop = $mgsvStack.Pop()
+                if (($mgsvValue -eq '}' -and $mgsvTop.kind -ne 'object') -or ($mgsvValue -eq ']' -and $mgsvTop.kind -ne 'array')) { throw 'Wrong JSON container.' }
+            } elseif ($mgsvValue.StartsWith('"') -and $mgsvI + 1 -lt $mgsvTokens.Count -and $mgsvTokens[$mgsvI + 1].Value -eq ':') {
+                if ($mgsvStack.Count -eq 0 -or $mgsvStack.Peek().kind -ne 'object') { throw 'Invalid object key.' }
+                $mgsvKey = $mgsvValue.Substring(1, $mgsvValue.Length - 2)
+                $mgsvKeys = $mgsvStack.Peek().seen
+                if ($mgsvKeys.ContainsKey($mgsvKey)) { throw 'Duplicate JSON key.' }
+                $mgsvKeys[$mgsvKey] = $true
+            }
+        }
+        if ($mgsvStack.Count -ne 0 -or $mgsvRaw.Substring($mgsvPosition).Trim().Length -ne 0) { throw 'Incomplete protocol text.' }
+        return (ConvertFrom-Json -InputObject $mgsvRaw)
+    }
+    function Read-MgsvJson($mgsvPath, $mgsvMaximum) {
+        $mgsvItem = Assert-MgsvPlain $mgsvPath
+        if ($mgsvItem.PSIsContainer -or $mgsvItem.Length -le 0 -or $mgsvItem.Length -gt $mgsvMaximum) { throw 'Invalid metadata file size.' }
+        return (Convert-MgsvJson ([IO.File]::ReadAllText($mgsvPath)))
+    }
+    function Assert-MgsvKeys($mgsvObject, [string[]]$mgsvExpected) {
+        $mgsvKeys = @($mgsvObject.PSObject.Properties | ForEach-Object { $_.Name })
+        if ($mgsvKeys.Count -ne $mgsvExpected.Count) { throw 'Wrong metadata property count.' }
+        foreach ($mgsvKey in $mgsvKeys) { if ($mgsvKey -cnotin $mgsvExpected) { throw 'Unknown metadata property.' } }
+    }
+    function Test-MgsvInteger($mgsvValue) { return ($mgsvValue -is [int] -or $mgsvValue -is [long]) }
+    function Write-MgsvJson($mgsvPath, $mgsvObject) {
+        $mgsvBytes = [Text.Encoding]::UTF8.GetBytes(($mgsvObject | ConvertTo-Json -Depth 6))
+        $mgsvFile = [IO.File]::Open(($mgsvPath + '.tmp'), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $mgsvFile.Write($mgsvBytes, 0, $mgsvBytes.Length); $mgsvFile.Flush() } finally { $mgsvFile.Dispose() }
+        [IO.File]::Move(($mgsvPath + '.tmp'), $mgsvPath)
+    }
+    function Get-MgsvHash($mgsvPath, $mgsvLabel) {
+        $mgsvFile = [IO.File]::Open($mgsvPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $mgsvHash = [Security.Cryptography.SHA256]::Create()
+        try {
+            $mgsvTotal = $mgsvFile.Length
+            if ($mgsvTotal -le 0) { throw 'Empty file.' }
+            $mgsvBuffer = [byte[]]::new(4MB)
+            $mgsvDone = [long]0
+            $mgsvClock = [Diagnostics.Stopwatch]::StartNew()
+            while (($mgsvRead = $mgsvFile.Read($mgsvBuffer, 0, $mgsvBuffer.Length)) -gt 0) {
+                [void]$mgsvHash.TransformBlock($mgsvBuffer, 0, $mgsvRead, $mgsvBuffer, 0)
+                $mgsvDone += $mgsvRead
+                if ($mgsvClock.ElapsedMilliseconds -gt 750) {
+                    Write-Progress -Activity $mgsvLabel -Status ('{0:N0} / {1:N0} MiB' -f ($mgsvDone / 1MB), ($mgsvTotal / 1MB)) -PercentComplete ([int][Math]::Min(100, 100 * $mgsvDone / $mgsvTotal))
+                    $mgsvClock.Restart()
+                }
+            }
+            [void]$mgsvHash.TransformFinalBlock([byte[]]@(), 0, 0)
+            if ($mgsvDone -ne $mgsvTotal) { throw 'File size changed while hashing.' }
+            return [BitConverter]::ToString($mgsvHash.Hash).Replace('-', '').ToLowerInvariant()
+        } finally { $mgsvHash.Dispose(); $mgsvFile.Dispose(); Write-Progress -Activity $mgsvLabel -Completed }
+    }
+    function Wait-MgsvFile($mgsvPath, $mgsvSeconds, $mgsvMaximum) {
+        $mgsvClock = [Diagnostics.Stopwatch]::StartNew()
+        while (-not [IO.File]::Exists($mgsvPath)) {
+            if ($mgsvClock.Elapsed.TotalSeconds -gt $mgsvSeconds) { throw 'Timed out waiting for the guest. No automatic restart will occur.' }
+            if ($mgsvLaunched -and $mgsvLaunchClock.Elapsed.TotalSeconds -gt 60) {
+                $mgsvClients = @(Get-Process | Where-Object { $_.ProcessName -in @('WindowsSandbox','WindowsSandboxClient','WindowsSandboxRemoteSession') })
+                if ($mgsvClients.Count -eq 0) { throw 'Sandbox has closed. Existing reports and cache are preserved.' }
+            }
+            Start-Sleep -Seconds 1
+        }
+        $mgsvItem = Assert-MgsvPlain $mgsvPath
+        if ($mgsvItem.PSIsContainer -or $mgsvItem.Length -le 0 -or $mgsvItem.Length -gt $mgsvMaximum) { throw 'Invalid guest report file.' }
+    }
+    function Assert-MgsvFiles($mgsvFiles) {
+        if (@($mgsvFiles).Count -ne 10) { throw 'Wrong game file count.' }
+        $mgsvSeen = @{}
+        foreach ($mgsvEntry in $mgsvFiles) {
+            Assert-MgsvKeys $mgsvEntry @('path','bytes','sha256')
+            if ($mgsvSeen.ContainsKey($mgsvEntry.path)) { throw 'Duplicate game file.' }
+            $mgsvExpected = @($mgsvExpectedFiles | Where-Object { $_.path -ceq $mgsvEntry.path })
+            if ($mgsvExpected.Count -ne 1 -or -not (Test-MgsvInteger $mgsvEntry.bytes) -or $mgsvEntry.bytes -ne $mgsvExpected[0].bytes -or $mgsvEntry.sha256 -cne $mgsvExpected[0].sha256) { throw 'Unrecognized game file identity.' }
+            $mgsvSeen[$mgsvEntry.path] = $true
+        }
+    }
+    function Assert-MgsvBinding($mgsvObject, $mgsvStage, $mgsvChallenge, $mgsvTag) {
+        if (-not (Test-MgsvInteger $mgsvObject.schema) -or $mgsvObject.schema -ne 1 -or $mgsvObject.stage -cne $mgsvStage -or $mgsvObject.run -cne $mgsvRun -or $mgsvObject.session -cne $mgsvSession -or $mgsvObject.challenge -cne $mgsvChallenge -or $mgsvObject.source_tag -cne $mgsvTag) { throw 'Wrong phase, run, guest session, challenge or source.' }
+    }
+    try {
+        if ($mgsvCacheRun -cnotmatch '^[0-9a-f]{32}$' -or $mgsvSessionTag -cnotmatch '^[0-9a-f]{64}$') { throw 'Unfilled package template.' }
+        $mgsvExpectedFiles = @(Convert-MgsvJson $mgsvExpectedJson)
+        $mgsvPackageFiles = Convert-MgsvJson $mgsvPackageJson
+        $mgsvNames = @('GUEST-SESSION.txt','Guest-Prelogin.txt','GUEST-OFFLINE.txt','GUEST-STAGE.txt','GUEST-STARTUP.txt','START-HERE.txt')
+        Assert-MgsvKeys $mgsvPackageFiles $mgsvNames
+        $mgsvSandbox = Join-Path ([Environment]::GetFolderPath('Windows')) 'System32\WindowsSandbox.exe'
+        if (-not (Test-Path -LiteralPath $mgsvSandbox -PathType Leaf)) { throw 'Windows Sandbox launcher is unavailable. Nothing was installed.' }
+        if (@(Get-Process | Where-Object { $_.ProcessName -in @('WindowsSandbox','WindowsSandboxClient','WindowsSandboxRemoteSession','mgsvtpp') }).Count -ne 0) { throw 'Close an existing Sandbox or MGSV normally before starting this test.' }
+        $mgsvDownloads = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads'
+        [void](Assert-MgsvPlain ([Environment]::GetFolderPath('UserProfile')))
+        [void](Assert-MgsvPlain $mgsvDownloads)
+        $mgsvCacheRoot = Join-Path $mgsvDownloads ('MGSV-QA-' + $mgsvCacheRun)
+        $mgsvCacheInput = Join-Path $mgsvCacheRoot 'Input'
+        $mgsvCacheGame = Join-Path $mgsvCacheInput 'Game'
+        foreach ($mgsvPath in @($mgsvCacheRoot,$mgsvCacheInput,$mgsvCacheGame,"$mgsvCacheGame\master","$mgsvCacheGame\master\0")) { [void](Assert-MgsvPlain $mgsvPath) }
+        $mgsvCacheManifest = Join-Path $mgsvCacheInput 'game-stage-manifest.json'
+        [void](Assert-MgsvPlain $mgsvCacheManifest)
+        if ((Get-MgsvHash $mgsvCacheManifest 'Checking saved manifest') -cne $mgsvCacheManifestTag) { throw 'The saved manifest differs from the accepted copy report.' }
+        $mgsvOldManifest = Read-MgsvJson $mgsvCacheManifest 8192
+        Assert-MgsvFiles $mgsvOldManifest.files
+        $mgsvTotal = [long]0
+        $mgsvIndex = 0
+        foreach ($mgsvEntry in $mgsvExpectedFiles) {
+            $mgsvIndex++
+            Write-Output ('Checking saved cache {0}/10: {1}' -f $mgsvIndex,$mgsvEntry.path)
+            $mgsvPath = Join-Path $mgsvCacheGame $mgsvEntry.path
+            $mgsvItem = Assert-MgsvPlain $mgsvPath
+            if ($mgsvItem.PSIsContainer -or $mgsvItem.Length -ne $mgsvEntry.bytes -or (Get-MgsvHash $mgsvPath 'Checking saved game cache') -cne $mgsvEntry.sha256) { throw 'The saved game cache failed verification. No guest was opened.' }
+            $mgsvTotal += $mgsvEntry.bytes
+        }
+        Add-Type -AssemblyName System.Windows.Forms
+        $mgsvDialog = [Windows.Forms.OpenFileDialog]::new()
+        $mgsvDialog.Title = 'Select GUEST-SESSION.txt from the newly extracted restart package'
+        $mgsvDialog.Filter = 'Guest session instructions (GUEST-SESSION.txt)|GUEST-SESSION.txt'
+        try {
+            if ($mgsvDialog.ShowDialog() -ne [Windows.Forms.DialogResult]::OK) { throw 'Cancelled.' }
+            $mgsvPackageRoot = [IO.Path]::GetDirectoryName($mgsvDialog.FileName)
+        } finally { $mgsvDialog.Dispose() }
+        foreach ($mgsvName in $mgsvNames) {
+            $mgsvSource = Join-Path $mgsvPackageRoot $mgsvName
+            [void](Assert-MgsvPlain $mgsvSource)
+            if ((Get-MgsvHash $mgsvSource 'Checking restart instructions') -cne $mgsvPackageFiles.$mgsvName) { throw 'The restart package is incomplete or changed.' }
+        }
+        $mgsvRootDrive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($mgsvDownloads))
+        $mgsvSystemDrive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot([Environment]::GetFolderPath('Windows')))
+        $mgsvCanLink = $mgsvRootDrive.DriveFormat -ieq 'NTFS'
+        $mgsvCopyBytes = if ($mgsvCanLink) { [long]0 } else { $mgsvTotal }
+        $mgsvGuestReserve = $mgsvTotal + 6GB
+        if ($mgsvRootDrive.Name -ieq $mgsvSystemDrive.Name) {
+            if ($mgsvRootDrive.AvailableFreeSpace -lt ($mgsvGuestReserve + $mgsvCopyBytes + 1GB)) { throw 'Not enough host disk space for the guest game copy and VM headroom.' }
+        } else {
+            if ($mgsvSystemDrive.AvailableFreeSpace -lt $mgsvGuestReserve -or $mgsvRootDrive.AvailableFreeSpace -lt ($mgsvCopyBytes + 1GB)) { throw 'Not enough system/QA drive space for this test.' }
+        }
+        $mgsvRun = [Guid]::NewGuid().ToString('N')
+        $mgsvRoot = Join-Path $mgsvDownloads ('MGSV-QA-' + $mgsvRun)
+        if (Test-Path -LiteralPath $mgsvRoot) { throw 'The new run folder already exists.' }
+        $mgsvInput = Join-Path $mgsvRoot 'Input'
+        $mgsvOutput = Join-Path $mgsvRoot 'Output'
+        [void][IO.Directory]::CreateDirectory($mgsvInput)
+        [void][IO.Directory]::CreateDirectory($mgsvOutput)
+        foreach ($mgsvName in $mgsvNames) {
+            $mgsvDestination = Join-Path $mgsvInput $mgsvName
+            [IO.File]::Copy((Join-Path $mgsvPackageRoot $mgsvName),$mgsvDestination,$false)
+            if ((Get-MgsvHash $mgsvDestination 'Checking staged instructions') -cne $mgsvPackageFiles.$mgsvName) { throw 'Instruction staging changed bytes.' }
+        }
+        Write-MgsvJson "$mgsvInput\run.json" ([ordered]@{schema=1;run=$mgsvRun;prelogin_sha256=$mgsvPreloginTag;session_sha256=$mgsvSessionTag})
+        $mgsvProfile = Join-Path $mgsvRoot 'MGSV-Test.wsb'
+        $mgsvRetired = Join-Path $mgsvRoot 'MGSV-Test.online-retired'
+        $mgsvInputXml = [Security.SecurityElement]::Escape($mgsvInput)
+        $mgsvOutputXml = [Security.SecurityElement]::Escape($mgsvOutput)
+        $mgsvXml = @"
+<Configuration>
+<VGpu>Enable</VGpu><Networking>Enable</Networking><MemoryInMB>4096</MemoryInMB>
+<AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput>
+<PrinterRedirection>Disable</PrinterRedirection><ClipboardRedirection>Disable</ClipboardRedirection>
+<MappedFolders>
+<MappedFolder><HostFolder>$mgsvInputXml</HostFolder><SandboxFolder>C:\MGSVQA\Input</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>
+<MappedFolder><HostFolder>$mgsvOutputXml</HostFolder><SandboxFolder>C:\MGSVQA\Output</SandboxFolder><ReadOnly>false</ReadOnly></MappedFolder>
+</MappedFolders>
+<LogonCommand><Command>C:\Windows\System32\notepad.exe C:\MGSVQA\Input\START-HERE.txt</Command></LogonCommand>
+</Configuration>
+"@
+        [IO.File]::WriteAllText($mgsvProfile,$mgsvXml,[Text.Encoding]::UTF8)
+        $mgsvSummary = [ordered]@{schema=1;result='in_progress';run=$mgsvRun;session=$null;cache_verified=$true;prelogin_observations=$false;offline_observations=$false;game_copy_observations=$false;startup_outcome=$null;process_started=$false;exit_code_hex=$null;native_error=$null;executed_source_attested=$false;all_network_isolation_verified=$false;offline_license_verified=$false;save_isolation_verified=$false;gameplay_verified=$false;co_op_verified=$false}
+        Write-Output ('New test workspace: ' + $mgsvRoot)
+        Write-Output 'Opening a NEW Sandbox. Leave this HOST PowerShell open. Follow START-HERE inside the guest.'
+        Start-Process -FilePath $mgsvSandbox -ArgumentList ('"' + $mgsvProfile + '"') -WorkingDirectory $mgsvRoot
+        $mgsvLaunched = $true
+        $mgsvLaunchClock = [Diagnostics.Stopwatch]::StartNew()
+        Write-Output 'Waiting for guest Steam installation and the prelogin storage check (up to 60 minutes).'
+        Wait-MgsvFile "$mgsvOutput\prelogin.gate" 3600 512
+        $mgsvPreloginText = [IO.File]::ReadAllText("$mgsvOutput\prelogin.gate")
+        $mgsvMatch = [regex]::Match($mgsvPreloginText, ('\AWWQA1\n' + $mgsvRun + '\n([0-9a-f]{32})\nprelogin\n' + $mgsvPreloginTag + '\n1,1,1,1\n\z'))
+        if (-not $mgsvMatch.Success -or $mgsvMatch.Groups[1].Value -eq ('0' * 32)) { throw 'The fresh guest storage report is incomplete or mismatched.' }
+        $mgsvSession = $mgsvMatch.Groups[1].Value
+        $mgsvSummary.session = $mgsvSession
+        $mgsvSummary.prelogin_observations = $true
+        $mgsvOfflineChallenge = [Guid]::NewGuid().ToString('N')
+        Write-MgsvJson "$mgsvInput\offline-request.json" ([ordered]@{schema=1;stage='offline-v1';run=$mgsvRun;session=$mgsvSession;challenge=$mgsvOfflineChallenge;source_tag=$mgsvOfflineTag})
+        Write-MgsvJson "$mgsvInput\prelogin-accepted.json" ([ordered]@{schema=1;result='prelogin_observations_accepted';run=$mgsvRun;session=$mgsvSession;source_tag=$mgsvSessionTag;offline_challenge=$mgsvOfflineChallenge})
+        Write-Output 'Guest storage check accepted locally. Waiting for guest sign-in, Cloud off, Go Offline and Exit.'
+        Wait-MgsvFile "$mgsvOutput\offline.gate" 3600 512
+        $mgsvExpectedOffline = "WWQA2`n$mgsvRun`n$mgsvSession`n$mgsvOfflineChallenge`noffline`n$mgsvOfflineTag`n1,1,1,1,1,1`n"
+        if ([IO.File]::ReadAllText("$mgsvOutput\offline.gate") -cne $mgsvExpectedOffline) { throw 'The fresh offline report is incomplete or mismatched.' }
+        $mgsvSummary.offline_observations = $true
+        [IO.File]::Move($mgsvProfile,$mgsvRetired)
+        $mgsvStageChallenge = [Guid]::NewGuid().ToString('N')
+        Write-MgsvJson "$mgsvInput\stage-request.json" ([ordered]@{schema=1;stage='game-stage-v1';run=$mgsvRun;session=$mgsvSession;challenge=$mgsvStageChallenge;source_tag=$mgsvStageTag})
+        Wait-MgsvFile "$mgsvOutput\stage-ready.gate" 120 512
+        $mgsvExpectedReady = "WWQA3`n$mgsvRun`n$mgsvSession`n$mgsvStageChallenge`nprestage`n$mgsvStageTag`n1,1,1,1`n"
+        if ([IO.File]::ReadAllText("$mgsvOutput\stage-ready.gate") -cne $mgsvExpectedReady) { throw 'Wrong fresh staging-ready report.' }
+        $mgsvGame = Join-Path $mgsvInput 'Game'
+        if (Test-Path -LiteralPath $mgsvGame) { throw 'New Input already contains game data.' }
+        [void][IO.Directory]::CreateDirectory($mgsvGame)
+        foreach ($mgsvEntry in $mgsvExpectedFiles) {
+            $mgsvSource = Join-Path $mgsvCacheGame $mgsvEntry.path
+            $mgsvDestination = Join-Path $mgsvGame $mgsvEntry.path
+            [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($mgsvDestination))
+            if ($mgsvCanLink) {
+                # Only the verified QA cache is linked. Never set attributes or
+                # modify these linked files; the guest mapping is read-only.
+                New-Item -ItemType HardLink -Path $mgsvDestination -Value $mgsvSource -ErrorAction Stop | Out-Null
+            } else { [IO.File]::Copy($mgsvSource,$mgsvDestination,$false) }
+            if ((Get-MgsvHash $mgsvDestination ('Checking staged ' + $mgsvEntry.path)) -cne $mgsvEntry.sha256) { throw 'Staged game identity changed.' }
+        }
+        $mgsvManifest = [ordered]@{schema=1;stage='game-stage-v1';run=$mgsvRun;session=$mgsvSession;challenge=$mgsvStageChallenge;source_tag=$mgsvStageTag;files=$mgsvExpectedFiles}
+        Write-MgsvJson "$mgsvInput\game-stage-manifest.json" $mgsvManifest
+        Write-Output 'Host cache is staged read-only. The guest is copying its own independent game files.'
+        Wait-MgsvFile "$mgsvOutput\game-stage-result.json" 3600 8192
+        $mgsvGameResult = Read-MgsvJson "$mgsvOutput\game-stage-result.json" 8192
+        Assert-MgsvKeys $mgsvGameResult @('schema','stage','run','session','challenge','source_tag','result','files')
+        Assert-MgsvBinding $mgsvGameResult 'game-stage-v1' $mgsvStageChallenge $mgsvStageTag
+        if ($mgsvGameResult.result -cne 'files_copied_not_launched') { throw 'Wrong game-copy outcome.' }
+        Assert-MgsvFiles $mgsvGameResult.files
+        $mgsvSummary.game_copy_observations = $true
+        $mgsvStartupChallenge = [Guid]::NewGuid().ToString('N')
+        Write-MgsvJson "$mgsvInput\startup-request.json" ([ordered]@{schema=1;stage='startup-v1';run=$mgsvRun;session=$mgsvSession;challenge=$mgsvStartupChallenge;source_tag=$mgsvStartupTag;manifest_sha256=(Get-MgsvHash "$mgsvInput\game-stage-manifest.json" 'Checking copy manifest');result_sha256=(Get-MgsvHash "$mgsvOutput\game-stage-result.json" 'Checking copy result')})
+        Write-Output 'Guest copy accepted locally. Follow the guest prompt for the previously approved startup check.'
+        Wait-MgsvFile "$mgsvOutput\startup-result.json" 1800 2048
+        $mgsvStartupResult = Read-MgsvJson "$mgsvOutput\startup-result.json" 2048
+        Assert-MgsvKeys $mgsvStartupResult @('schema','stage','run','session','challenge','source_tag','result','process_started','observed_seconds','exit_code_hex','native_error','close_method','gameplay_verified','offline_license_verified','save_isolation_verified','co_op_verified')
+        Assert-MgsvBinding $mgsvStartupResult 'startup-v1' $mgsvStartupChallenge $mgsvStartupTag
+        foreach ($mgsvFlag in @('gameplay_verified','offline_license_verified','save_isolation_verified','co_op_verified')) { if ($mgsvStartupResult.$mgsvFlag -isnot [bool] -or $mgsvStartupResult.$mgsvFlag) { throw 'Unsupported proof claim in startup result.' } }
+        if ($mgsvStartupResult.result -cnotin @('owner_aborted','exited_before_deadline','process_survived_deadline','probe_error','cleanup_failed') -or $mgsvStartupResult.process_started -isnot [bool] -or -not (Test-MgsvInteger $mgsvStartupResult.observed_seconds) -or $mgsvStartupResult.observed_seconds -lt 0 -or $mgsvStartupResult.observed_seconds -gt 130) { throw 'Invalid startup observation.' }
+        if ($null -ne $mgsvStartupResult.exit_code_hex -and $mgsvStartupResult.exit_code_hex -cnotmatch '^[0-9A-F]{8}$') { throw 'Invalid startup exit code.' }
+        if ($null -ne $mgsvStartupResult.native_error -and -not (Test-MgsvInteger $mgsvStartupResult.native_error)) { throw 'Invalid native error.' }
+        if ($mgsvStartupResult.close_method -cnotin @('not_needed','graceful','forced','failed')) { throw 'Invalid process close observation.' }
+        if ($mgsvStartupResult.result -ceq 'owner_aborted' -and ($mgsvStartupResult.process_started -or $mgsvStartupResult.observed_seconds -ne 0 -or $null -ne $mgsvStartupResult.exit_code_hex -or $null -ne $mgsvStartupResult.native_error -or $mgsvStartupResult.close_method -cne 'not_needed')) { throw 'Inconsistent aborted startup.' }
+        if ($mgsvStartupResult.result -cin @('exited_before_deadline','process_survived_deadline') -and (-not $mgsvStartupResult.process_started -or $null -eq $mgsvStartupResult.exit_code_hex -or $null -ne $mgsvStartupResult.native_error)) { throw 'Inconsistent process observation.' }
+        if ($mgsvStartupResult.result -ceq 'exited_before_deadline' -and $mgsvStartupResult.close_method -cne 'not_needed') { throw 'Inconsistent early exit.' }
+        if ($mgsvStartupResult.result -ceq 'process_survived_deadline' -and ($mgsvStartupResult.observed_seconds -lt 119 -or $mgsvStartupResult.close_method -cnotin @('graceful','forced'))) { throw 'Inconsistent timed observation.' }
+        if ($mgsvStartupResult.result -ceq 'probe_error' -and $null -eq $mgsvStartupResult.native_error) { throw 'Missing probe error.' }
+        if ($mgsvStartupResult.result -ceq 'cleanup_failed' -and (-not $mgsvStartupResult.process_started -or $mgsvStartupResult.close_method -cne 'failed')) { throw 'Inconsistent process cleanup.' }
+        $mgsvSummary.result = 'startup_observation_collected'
+        $mgsvSummary.startup_outcome = $mgsvStartupResult.result
+        $mgsvSummary.process_started = $mgsvStartupResult.process_started
+        $mgsvSummary.exit_code_hex = $mgsvStartupResult.exit_code_hex
+        $mgsvSummary.native_error = $mgsvStartupResult.native_error
+        Write-MgsvJson "$mgsvOutput\restart-result.json" $mgsvSummary
+        Write-Output ('Saved final report: ' + "$mgsvOutput\restart-result.json")
+        Write-Output 'Exit guest Steam normally. Once both helpers finish, you may close Sandbox; the host cache/reports remain.'
+        Write-Output 'Upload only restart-result.json, plus any on-screen game error wording. Startup collection is not co-op proof.'
+    } catch {
+        if ($mgsvInput -and [IO.Directory]::Exists($mgsvInput)) {
+            try { Write-MgsvJson "$mgsvInput\host-error.json" ([ordered]@{schema=1;result='host_coordinator_stopped'}) } catch { }
+        }
+        if ($mgsvSummary -and $mgsvOutput -and -not [IO.File]::Exists("$mgsvOutput\restart-result.json")) {
+            $mgsvSummary.result = 'host_coordinator_stopped'
+            try { Write-MgsvJson "$mgsvOutput\restart-result.json" $mgsvSummary } catch { }
+        }
+        Write-Output 'The coordinator stopped. Keep existing cache/reports; do not rerun or reconnect the guest.'
+        throw
+    } finally {
+        if ($mgsvProfile -and [IO.File]::Exists($mgsvProfile) -and $mgsvRetired -and -not [IO.File]::Exists($mgsvRetired)) {
+            try { [IO.File]::Move($mgsvProfile,$mgsvRetired) } catch { Write-Output 'Could not retire the launcher. Do not reopen it.' }
+        }
+    }
+}
